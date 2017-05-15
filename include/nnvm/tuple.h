@@ -16,7 +16,7 @@
 namespace nnvm {
 
 /*! \brief data type to store array index */
-typedef uint32_t index_t;
+typedef int64_t index_t;
 
 /*!
  * \brief A dynamic sized array data strcuture that is optimized for storing
@@ -151,7 +151,7 @@ class Tuple {
     return ndim_ <= kStackCache ? (data_stack_ + ndim_): (data_heap_ + ndim_);
   }
   /*! \return number of dimension of the tuple */
-  inline index_t ndim() const {
+  inline size_t ndim() const {
     return ndim_;
   }
   /*!
@@ -159,7 +159,7 @@ class Tuple {
    * \param i dimension index
    * \return the corresponding dimension size
    */
-  inline ValueType& operator[](index_t i) {
+  inline ValueType& operator[](size_t i) {
     return begin()[i];
   }
   /*!
@@ -167,7 +167,7 @@ class Tuple {
    * \param i dimension index
    * \return the corresponding dimension size
    */
-  inline const ValueType& operator[](index_t i) const {
+  inline const ValueType& operator[](size_t i) const {
     return begin()[i];
   }
   /*!
@@ -301,7 +301,7 @@ class Tuple {
   // stack cache size
   static const uint32_t kStackCache = 4;
   /*! \brief number of dimension of the tuple */
-  index_t ndim_{0};
+  size_t ndim_{0};
   /*! \brief number of cells allocated in data_heap_ */
   index_t num_heap_allocated_{0};
   /*! \brief in stack space used to store shape when it is small */
@@ -462,7 +462,7 @@ class TShape : public Tuple<index_t> {
     const index_t *d = this->data();
     s.shape_[1] = d[ndim() - 1];
     index_t ymax = 1;
-    for (index_t i = 1; i < ndim(); ++i) {
+    for (size_t i = 1; i < ndim(); ++i) {
       ymax *= d[i - 1];
     }
     s.shape_[0] = ymax;
@@ -489,7 +489,7 @@ class TShape : public Tuple<index_t> {
     for (index_t i = axis_begin; i <= axis_end; ++i) {
       s.shape_[1] *= d[i];
     }
-    for (index_t i = axis_end + 1; i < ndim(); ++i) {
+    for (size_t i = axis_end + 1; i < ndim(); ++i) {
       s.shape_[2] *= d[i];
     }
     return s;
@@ -535,6 +535,23 @@ class TShape : public Tuple<index_t> {
 #endif
 };
 
+template<typename SrcIter, typename DstIter>
+inline DstIter ShapeTypeCast(const SrcIter begin,
+                               const SrcIter end,
+                               DstIter dst_begin) {
+  typedef typename std::iterator_traits<SrcIter>::value_type SrcDType;
+  typedef typename std::iterator_traits<DstIter>::value_type DstDType;
+  auto cast = [](const SrcDType& dim) { return static_cast<DstDType>(dim); };
+  return std::transform(begin, end, dst_begin, cast);
+}
+
+template<typename SrcIter>
+inline TShape ShapeTypeCast(const SrcIter begin, const SrcIter end) {
+  size_t ndim = std::distance(begin, end);
+  TShape res(ndim);
+  ShapeTypeCast(begin, end, res.begin());
+  return res;
+}
 }  // namespace nnvm
 
 #endif  // NNVM_TUPLE_H_
