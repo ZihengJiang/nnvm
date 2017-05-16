@@ -535,16 +535,18 @@ class TShape : public Tuple<index_t> {
 #endif
 };
 
+/*! \brief helper function to cast type of container elements */
 template<typename SrcIter, typename DstIter>
 inline DstIter ShapeTypeCast(const SrcIter begin,
-                               const SrcIter end,
-                               DstIter dst_begin) {
+                             const SrcIter end,
+                             DstIter dst_begin) {
   typedef typename std::iterator_traits<SrcIter>::value_type SrcDType;
   typedef typename std::iterator_traits<DstIter>::value_type DstDType;
   auto cast = [](const SrcDType& dim) { return static_cast<DstDType>(dim); };
   return std::transform(begin, end, dst_begin, cast);
 }
 
+/*! \brief helper function to transform a container to TShape with type cast */
 template<typename SrcIter>
 inline TShape ShapeTypeCast(const SrcIter begin, const SrcIter end) {
   size_t ndim = std::distance(begin, end);
