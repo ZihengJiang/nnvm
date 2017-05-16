@@ -151,7 +151,7 @@ class Tuple {
     return ndim_ <= kStackCache ? (data_stack_ + ndim_): (data_heap_ + ndim_);
   }
   /*! \return number of dimension of the tuple */
-  inline size_t ndim() const {
+  inline uint32_t ndim() const {
     return ndim_;
   }
   /*!
@@ -277,31 +277,22 @@ class Tuple {
    * \param strm the output stream
    * \tparam TStream any stream type that have write
    */
-  template<typename TStream>
-  inline void Save(TStream *strm) const {
-    strm->Write(&ndim_, sizeof(ndim_));
-    strm->Write(begin(), sizeof(ValueType) * ndim_);
-  }
+  template<typename DType=ValueType, typename TStream>
+  inline void Save(TStream *strm) const;
   /*!
    * \brief load the content from binary stream
    * \param strm the output stream
    * \tparam TStream any stream type that have write
    * \return whether the load is successful
    */
-  template<typename TStream>
-  inline bool Load(TStream *strm) {
-    if (strm->Read(&ndim_, sizeof(ndim_)) != sizeof(ndim_)) return false;
-    this->SetDim(ndim_);
-    size_t nread = sizeof(ValueType) * ndim_;
-    if (strm->Read(begin(), nread) != nread) return false;
-    return true;
-  }
+  template<typename DType=ValueType, typename TStream>
+  inline bool Load(TStream *strm);
 
  protected:
   // stack cache size
   static const uint32_t kStackCache = 4;
   /*! \brief number of dimension of the tuple */
-  size_t ndim_{0};
+  uint32_t ndim_{0};
   /*! \brief number of cells allocated in data_heap_ */
   index_t num_heap_allocated_{0};
   /*! \brief in stack space used to store shape when it is small */
@@ -554,6 +545,36 @@ inline TShape ShapeTypeCast(const SrcIter begin, const SrcIter end) {
   ShapeTypeCast(begin, end, res.begin());
   return res;
 }
+
+template<typename ValueType>
+template<typename DType, typename TStream>
+inline void Tuple<ValueType>::Save(TStream *strm) const {
+  strm->Write(&ndim_, sizeof(ndim_));
+  if (typeid(DType) == typeid(ValueType)) {
+    strm->Write(begin(), sizeof(ValueType) * ndim_);
+  } else {
+    std::vector<DType> buffer(ndim_);
+    ShapeTypeCast(begin(), end(), buffer.data());
+    strm->Write(buffer.data(), sizeof(DType) * ndim_);
+  }
+}
+
+template<typename ValueType>
+template<typename DType, typename TStream>
+inline bool Tuple<ValueType>::Load(TStream *strm) {
+  if (strm->Read(&ndim_, sizeof(ndim_)) != sizeof(ndim_)) return false;
+  this->SetDim(ndim_);
+  size_t nread = sizeof(DType) * ndim_;
+  if (typeid(DType) == typeid(ValueType)) {
+    if (strm->Read(begin(), nread) != nread) return false;
+  } else {
+    std::vector<DType> buffer(ndim_);
+    if (strm->Read(buffer.data(), nread) != nread) return false;
+    ShapeTypeCast(buffer.begin(), buffer.end(), begin());
+  }
+  return true;
+}
+
 }  // namespace nnvm
 
 #endif  // NNVM_TUPLE_H_
