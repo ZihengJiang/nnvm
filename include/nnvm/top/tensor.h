@@ -67,7 +67,24 @@ struct CastParam : public dmlc::Parameter<CastParam> {
     .add_enum("float16", kFloat16)
     .add_enum("uint8", kUint8)
     .add_enum("int32", kInt32)
+    .add_enum("int8", kInt8)
     .describe("Output data type.");
+  }
+};
+
+struct ShiftParam : public dmlc::Parameter<ShiftParam> {
+  int bit;
+  DMLC_DECLARE_PARAMETER(ShiftParam) {
+    DMLC_DECLARE_FIELD(bit);
+  }
+};
+
+struct ClipParam : public dmlc::Parameter<ClipParam> {
+  float a_min;
+  float a_max;
+  DMLC_DECLARE_PARAMETER(ClipParam) {
+    DMLC_DECLARE_FIELD(a_min);
+    DMLC_DECLARE_FIELD(a_max);
   }
 };
 
