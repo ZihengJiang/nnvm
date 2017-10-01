@@ -56,6 +56,7 @@ enum TypeFlag {
   kInt32 = 4,
   kInt8  = 5,
   kInt64 = 6,
+  kInt16 = 7,
 };
 
 struct CastParam : public dmlc::Parameter<CastParam> {
