@@ -38,6 +38,41 @@ def _compute_binary(f):
     return _compute
 
 
+@reg.register_compute("shift")
+def compute_shift(attrs, inputs, _):
+    data = inputs[0]
+    bit = attrs.get_int("bit")
+    out = tvm.compute(data.shape, lambda *i: data(*i) * 2**bit, tag="shift")
+    return out
+
+@reg.register_schedule("shift")
+def schedule_shift(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
+
+
+@reg.register_compute("clip")
+def compute_clip(attrs, inputs, _):
+    data = inputs[0]
+    a_min = attrs.get_float("a_min")
+    a_max = attrs.get_float("a_max")
+    print('min: {}, max: {}'.format(a_min, a_max))
+    return tvm.compute(data.shape, lambda *i: tvm.max(tvm.min(data(*i), a_max), a_min), tag='clip')
+
+@reg.register_schedule("clip")
+def schedule_clip(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
+
+
+@reg.register_compute("cast")
+def compute_cast(attrs, inputs, _):
+    data = inputs[0]
+    return tvm.compute(data.shape, lambda *i: data(*i).astype('int8'), tag='cast')
+
+@reg.register_schedule("cast")
+def schedule_cast(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
+
+
 _fschedule_injective = tvm.convert(_schedule_injective)
 _fschedule_broadcast = _fschedule_injective
 _fschedule_elemwise = _fschedule_injective

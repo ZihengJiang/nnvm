@@ -72,6 +72,21 @@ NNVM_REGISTER_ELEMWISE_UNARY_OP(sqrt)
 )code" NNVM_ADD_FILELINE)
 .set_support_level(1);
 
+DMLC_REGISTER_PARAMETER(ShiftParam);
+
+NNVM_REGISTER_ELEMWISE_UNARY_OP(shift)
+.add_arguments(ShiftParam::__FIELDS__())
+.set_attr_parser(ParamParser<ShiftParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<ShiftParam>);
+
+
+DMLC_REGISTER_PARAMETER(ClipParam);
+
+NNVM_REGISTER_ELEMWISE_UNARY_OP(clip)
+.add_arguments(ClipParam::__FIELDS__())
+.set_attr_parser(ParamParser<ClipParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<ClipParam>);
+
 // binary ops
 
 NNVM_REGISTER_ELEMWISE_BINARY_OP(elemwise_add)
