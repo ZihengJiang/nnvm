@@ -4,7 +4,6 @@ from __future__ import absolute_import
 
 import tvm
 import topi
-import topi.cuda
 from . import registry as reg
 from .registry import OpPattern
 
@@ -45,15 +44,27 @@ def _compute_binary(f):
     return _compute
 
 
-@reg.register_compute("shift")
-def compute_shift(attrs, inputs, _):
+@reg.register_compute("left_shift")
+def compute_lshift(attrs, inputs, _):
     data = inputs[0]
     bit = attrs.get_int("bit")
-    out = tvm.compute(data.shape, lambda *i: data(*i) * 2**bit, tag="shift")
+    out = tvm.compute(data.shape, lambda *i: data(*i) << bit, tag="left_shift")
     return out
 
-@reg.register_schedule("shift")
-def schedule_shift(_, outs, target):
+@reg.register_schedule("left_shift")
+def schedule_lshift(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
+
+
+@reg.register_compute("right_shift")
+def compute_rshift(attrs, inputs, _):
+    data = inputs[0]
+    bit = attrs.get_int("bit")
+    out = tvm.compute(data.shape, lambda *i: data(*i) >> bit, tag="right_shift")
+    return out
+
+@reg.register_schedule("right_shift")
+def schedule_rshift(_, outs, target):
     return tvm.create_schedule([x.op for x in outs])
 
 
@@ -62,7 +73,6 @@ def compute_clip(attrs, inputs, _):
     data = inputs[0]
     a_min = attrs.get_float("a_min")
     a_max = attrs.get_float("a_max")
-    print('min: {}, max: {}'.format(a_min, a_max))
     return tvm.compute(data.shape, lambda *i: tvm.max(tvm.min(data(*i), a_max), a_min), tag='clip')
 
 @reg.register_schedule("clip")
@@ -73,7 +83,7 @@ def schedule_clip(_, outs, target):
 @reg.register_compute("cast")
 def compute_cast(attrs, inputs, _):
     data = inputs[0]
-    return tvm.compute(data.shape, lambda *i: data(*i).astype('int8'), tag='cast')
+    return tvm.compute(data.shape, lambda *i: data(*i).astype(attrs['dtype']), tag='cast')
 
 @reg.register_schedule("cast")
 def schedule_cast(_, outs, target):
