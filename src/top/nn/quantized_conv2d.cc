@@ -192,5 +192,16 @@ a bias vector is created and added to the outputs.
 .set_num_inputs(UseBiasNumInputs<QuantizedConv2DParam>)
 .set_support_level(2);
 
+NNVM_REGISTER_OP(conv2d)
+.set_attr<FQuantizedOp>("FQuantizedOp", [](nnvm::NodePtr n) {
+    NodePtr qnode = Node::Create();
+    qnode->attrs.op = nnvm::Op::Get("quantized_conv2d");
+    qnode->attrs.name = "quantized_" + n->attrs.name;
+    qnode->attrs.dict = n->attrs.dict;
+    if (qnode->attrs.op->attr_parser) {
+      qnode->attrs.op->attr_parser(&(qnode->attrs));
+    }
+    return qnode;
+  });
 }  // namespace top
 }  // namespace nnvm
