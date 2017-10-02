@@ -18,6 +18,7 @@ namespace top {
 struct QuantizedDenseParam : public dmlc::Parameter<QuantizedDenseParam> {
   int units;
   bool use_bias;
+  int shift;
   int out_type;
 
   DMLC_DECLARE_PARAMETER(QuantizedDenseParam) {
@@ -25,8 +26,11 @@ struct QuantizedDenseParam : public dmlc::Parameter<QuantizedDenseParam> {
     .describe("Number of hidden units of the dense transformation.");
     DMLC_DECLARE_FIELD(use_bias).set_default(true)
     .describe("Whether to use bias parameter");
+    DMLC_DECLARE_FIELD(shift)
+    .set_default(0);
     DMLC_DECLARE_FIELD(out_type)
     .set_default(kInt16)
+    .add_enum("int8", kInt8)
     .add_enum("int16", kInt16);
   }
   // constants
