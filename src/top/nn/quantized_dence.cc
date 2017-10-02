@@ -114,5 +114,16 @@ If ``use_bias`` is set to be false, then the ``bias`` term is ignored.
 .set_attr<FInferType>("FInferType", QuantizedDenseInferType)
 .set_support_level(1);
 
+NNVM_REGISTER_OP(dense)
+.set_attr<FQuantizedOp>("FQuantizedOp", [](nnvm::NodePtr n) {
+    NodePtr qnode = Node::Create();
+    qnode->attrs.op = nnvm::Op::Get("quantized_dense");
+    qnode->attrs.name = "quantized_" + n->attrs.name;
+    qnode->attrs.dict = n->attrs.dict;
+    if (qnode->attrs.op->attr_parser) {
+      qnode->attrs.op->attr_parser(&(qnode->attrs));
+    }
+    return qnode;
+  });
 }  // namespace top
 }  // namespace nnvm
