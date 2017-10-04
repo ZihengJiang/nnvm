@@ -176,7 +176,6 @@ using FSetInputVarAttrOnCompose = std::function<void(
     NodePtr var,
     const int index)>;
 
-using FQuantizedOp = std::function<nnvm::NodePtr (nnvm::NodePtr n)>;
 }  // namespace nnvm
 
 #endif  // NNVM_OP_ATTR_TYPES_H_
