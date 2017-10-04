@@ -1,6 +1,6 @@
 /*!
  *  Copyright (c) 2017 by Contributors
- * \file convolution.cc
+ * \file quantization_ops.cc
  * \brief Convolution operators
  */
 #include <nnvm/op.h>
