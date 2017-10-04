@@ -8,12 +8,16 @@
 #include <nnvm/op_attr_types.h>
 #include <nnvm/top/nn.h>
 #include <nnvm/top/tensor.h>
+#include <nnvm/compiler/op_attr_types.h>
 #include "./nn_common.h"
 #include "../op_common.h"
 #include "../elemwise_op_common.h"
 
 namespace nnvm {
 namespace top {
+
+using compiler::FQuantizedOp;
+using compiler::FCalibrate;
 
 template<typename TParam>
 inline bool QuantizedOpType(const nnvm::NodeAttrs& attrs,
@@ -62,9 +66,27 @@ NNVM_REGISTER_OP(quantized_elemwise_add)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<QuantizedElemwiseAddParam>);
 
 NNVM_REGISTER_OP(elemwise_add)
-.set_attr<FQuantizedOp>("FQuantizedOp", [](nnvm::NodePtr n) {
+.set_attr<FQuantizedOp>("FQuantizedOp",
+  [](const NodePtr& n, const std::unordered_map<std::string, std::string>& dict) {
     NodePtr qnode = Node::Create();
     qnode->attrs.op = nnvm::Op::Get("quantized_elemwise_add");
+    qnode->attrs.name = "quantized_" + n->attrs.name;
+    qnode->attrs.dict = n->attrs.dict;
+    if (qnode->attrs.op->attr_parser) {
+      qnode->attrs.op->attr_parser(&(qnode->attrs));
+    }
+    return qnode;
+  });
+
+
+// quantized reshape
+
+NNVM_REGISTER_OP(reshape)
+.add_alias("quantized_reshape")
+.set_attr<FQuantizedOp>("FQuantizedOp",
+  [](const NodePtr& n, const std::unordered_map<std::string, std::string>& dict) {
+    NodePtr qnode = Node::Create();
+    qnode->attrs.op = nnvm::Op::Get("reshape");
     qnode->attrs.name = "quantized_" + n->attrs.name;
     qnode->attrs.dict = n->attrs.dict;
     if (qnode->attrs.op->attr_parser) {
@@ -90,9 +112,10 @@ struct QuantizedDenseParam : public dmlc::Parameter<QuantizedDenseParam> {
     DMLC_DECLARE_FIELD(shift)
     .set_default(0);
     DMLC_DECLARE_FIELD(out_type)
-    .set_default(kInt16)
+    .set_default(kInt32)
     .add_enum("int8", kInt8)
-    .add_enum("int16", kInt16);
+    .add_enum("int16", kInt16)
+    .add_enum("int32", kInt32);
   }
   // constants
   static const constexpr int kData = 0;
@@ -174,15 +197,31 @@ If ``use_bias`` is set to be false, then the ``bias`` term is ignored.
 .set_support_level(1);
 
 NNVM_REGISTER_OP(dense)
-.set_attr<FQuantizedOp>("FQuantizedOp", [](nnvm::NodePtr n) {
+.set_attr<FQuantizedOp>("FQuantizedOp",
+  [](const NodePtr& n, const std::unordered_map<std::string, std::string>& dict) {
     NodePtr qnode = Node::Create();
     qnode->attrs.op = nnvm::Op::Get("quantized_dense");
     qnode->attrs.name = "quantized_" + n->attrs.name;
     qnode->attrs.dict = n->attrs.dict;
+    for (const auto& kv : dict) {
+      qnode->attrs.dict[kv.first] = kv.second;
+    }
     if (qnode->attrs.op->attr_parser) {
       qnode->attrs.op->attr_parser(&(qnode->attrs));
     }
     return qnode;
+  })
+.set_attr<FCalibrate>("FCalibrate",
+  [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
+     const std::vector<int>& base2_range,
+     std::unordered_map<std::string, std::string>* dict) {
+     const auto& inputs = idx[nid].inputs;
+     int k_a = base2_range[inputs[0].node_id];
+     int k_b = base2_range[inputs[1].node_id];
+     int k_c = base2_range[nid];
+     int shift = (k_c - (k_a + k_b) + 7);
+     (*dict)["shift"] = std::to_string(shift);
+     (*dict)["out_type"] = "int8";
   });
 
 
@@ -365,7 +404,8 @@ a bias vector is created and added to the outputs.
 .set_support_level(2);
 
 NNVM_REGISTER_OP(conv2d)
-.set_attr<FQuantizedOp>("FQuantizedOp", [](nnvm::NodePtr n) {
+.set_attr<FQuantizedOp>("FQuantizedOp",
+  [](const NodePtr& n, const std::unordered_map<std::string, std::string>& dict) {
     NodePtr qnode = Node::Create();
     qnode->attrs.op = nnvm::Op::Get("quantized_conv2d");
     qnode->attrs.name = "quantized_" + n->attrs.name;
@@ -381,7 +421,8 @@ NNVM_REGISTER_OP(conv2d)
 
 NNVM_REGISTER_OP(max_pool2d)
 .add_alias("quantized_max_pool2d")
-.set_attr<FQuantizedOp>("FQuantizedOp", [](nnvm::NodePtr n) {
+.set_attr<FQuantizedOp>("FQuantizedOp",
+  [](const NodePtr& n, const std::unordered_map<std::string, std::string>& dict) {
     NodePtr qnode = Node::Create();
     qnode->attrs.op = nnvm::Op::Get("max_pool2d");
     qnode->attrs.name = "quantized_" + n->attrs.name;

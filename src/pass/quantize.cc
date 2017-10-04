@@ -7,36 +7,55 @@
 #include <nnvm/graph.h>
 #include <nnvm/pass.h>
 #include <nnvm/op_attr_types.h>
+#include <nnvm/compiler/op_attr_types.h>
 #include <nnvm/compiler/packed_func_ext.h>
 #include <unordered_set>
+#include <string>
+#include <cmath>
 #include "../compiler/graph_transform.h"
 
 namespace nnvm {
 namespace pass {
 namespace {
 
+using compiler::FQuantizedOp;
+using compiler::FCalibrate;
+
 Graph QuantizeGraph(nnvm::Graph&& src) {
   static auto& quantized_op_map = Op::GetAttr<FQuantizedOp>("FQuantizedOp");
-  std::unordered_map<Node*, NodeEntry> mirror;
+  static auto& fcalibrate_map = Op::GetAttr<FCalibrate>("FCalibrate");
+  const auto& base2_range = src.GetAttr<std::vector<int>>("base2_range");
+  static constexpr float eps = 1e-04;
+  const auto& idx = src.indexed_graph();
+  std::unordered_map<Node*, NodeEntry> quantized_var;
+  std::unordered_map<Node*, int> reverse_mirror;
 
   auto transform = [&](uint32_t nid, const NodePtr& n, std::vector<NodeEntry>* ret) {
     if (n->is_variable()) return false;
-
     if (quantized_op_map.count(n->op())) {
+      std::unordered_map<std::string, std::string> dict;
+      if (fcalibrate_map.count(n->op())) {
+        auto fcalibrate = fcalibrate_map[n->op()];
+        fcalibrate(nid, n, idx, base2_range, &dict);
+      }
       auto fquantized_op = quantized_op_map[n->op()];
-      NodePtr qnode = fquantized_op(n);
+      NodePtr qnode = fquantized_op(n, dict);
+      reverse_mirror.emplace(qnode.get(), nid);
+
       for (const auto& e : n->inputs) {
         NodeEntry input;
         if (e.node->is_variable()) {
-          if (mirror.count(e.node.get())) {
-            input = mirror.at(e.node.get());
+          if (quantized_var.count(e.node.get())) {
+            input = quantized_var.at(e.node.get());
           } else {
-            // quantize variable
+            int k = base2_range[idx.node_id(e.node.get())];
+            float scale = float(std::pow(2, 7 - k)) * (1 - eps);
+
             NodeEntry mul = MakeNode("__mul_scalar__",
-              "quantize_mul_" + e.node->attrs.name, {e}, {{"scalar", "1.0"}});
+              "quantize_mul_" + e.node->attrs.name, {e}, {{"scalar", std::to_string(scale)}});
             NodeEntry cast = MakeNode("cast",
               "quantize_cast_" + e.node->attrs.name, {mul}, {{"dtype", "int8"}});
-            mirror.emplace(e.node.get(), cast);
+            quantized_var.emplace(e.node.get(), cast);
             input = cast;
           }
         } else {
@@ -59,14 +78,16 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
   };
 
   Graph ret = compiler::GraphTransform(std::move(src), transform);
-  // dequantize outputs
   std::vector<NodeEntry> outputs;
   outputs.reserve(outputs.size());
   for (const auto& e : ret.outputs) {
+    int k = base2_range[reverse_mirror.at(e.node.get())];
+    float scale = float(std::pow(2, k)) / std::pow(2, 7) / (1 - eps);
+
     NodeEntry cast = MakeNode("cast",
       "dequantize_cast_" + e.node->attrs.name, {e}, {{"dtype", "float32"}});
     NodeEntry mul = MakeNode("__mul_scalar__",
-      "dequantize_mul_" + e.node->attrs.name, {cast}, {{"scalar", "1.0"}});
+      "dequantize_mul_" + e.node->attrs.name, {cast}, {{"scalar", std::to_string(scale)}});
     outputs.emplace_back(mul);
   }
   ret.outputs = outputs;
