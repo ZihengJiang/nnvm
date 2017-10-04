@@ -37,7 +37,7 @@ def schedule_quantized_elemwise_add(_, outs, target):
 def compute_quantized_dense(attrs, inputs, _):
     shift = attrs.get_int('shift')
     out_dtype = attrs['out_type']
-    cmp_dtype = 'int16' # compute data type
+    cmp_dtype = 'int32' # compute data type
     data   = inputs[0]
     weight = inputs[1]
     m, l = data.shape
@@ -46,9 +46,10 @@ def compute_quantized_dense(attrs, inputs, _):
     k = tvm.reduce_axis((0, l), name='k')
     out_i16 = tvm.compute((m, n),
         lambda i, j: tvm.sum(data[i][k].astype(cmp_dtype) * weight[j][k].astype(cmp_dtype), axis=k))
+    out_i16 = topi.right_shift(out_i16, shift)
 
     if out_dtype == 'int8':
-        return topi.cast(topi.clip(topi.right_shift(out_i16, shift), -127, 127), out_dtype)
+        return topi.cast(topi.clip(out_i16, -127, 127), out_dtype)
     else:
         return out_i16
 

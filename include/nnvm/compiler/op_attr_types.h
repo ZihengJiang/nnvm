@@ -94,6 +94,17 @@ using FTVMLayoutRequest = std::function<bool (const NodeAttrs& attrs,
  */
 using FTVMVectorizedOp = std::function<nnvm::NodePtr (const nnvm::Node* node)>;
 
+
+using FQuantizedOp = std::function<nnvm::NodePtr(
+    const NodePtr& n,
+    const std::unordered_map<std::string, std::string>& dict)>;
+
+using FCalibrate = std::function<void(
+    uint32_t nid,
+    const NodePtr& n,
+    const nnvm::IndexedGraph& idx,
+    const std::vector<int>& base2_range,
+    std::unordered_map<std::string, std::string>* dict)>;
 }  // namespace compiler
 }  // namespace nnvm
 #endif  // NNVM_COMPILER_OP_ATTR_TYPES_H_

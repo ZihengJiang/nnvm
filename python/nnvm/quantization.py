@@ -51,19 +51,21 @@ def execute_graph(module, inputs, oshapes):
 
 
 def collect_statistics(graph, dataset, params=None):
-    # transform graph
-    graph = _collect_internal_outputs(graph);
     ishapes = {k : v.shape for k, v in dataset[0].items()}
-    _, oshapes = infer_shape(graph, **ishapes)
     graph = _compiler.optimize(graph, ishapes)
 
-    graph_, lib, _ = _compiler.build(graph.symbol, 'llvm', ishapes)
-    m = graph_runtime.create(graph_, lib, tvm.cpu(0))
+    # transform to statistic graph
+    stats_graph = _collect_internal_outputs(graph);
+    _, oshapes = infer_shape(stats_graph, **ishapes)
+
+    # build module
+    stats_graph, lib, _ = _compiler.build(stats_graph.symbol, 'llvm', ishapes)
+    m = graph_runtime.create(stats_graph, lib, tvm.cpu(0))
     if params is not None:
         m.set_input(**params)
 
-    # execute and collect record
-    out_names = graph.symbol.list_output_names()
+    # execute and collect stats
+    out_names = stats_graph.symbol.list_output_names()
     records = {}  # dict from node name to list of entry
     for inputs in dataset:
         outs = execute_graph(m, inputs, oshapes)
@@ -77,6 +79,7 @@ def collect_statistics(graph, dataset, params=None):
             else:
                 records[key] = [entry]
 
+    # analysis
     base2_range = []
     for name in out_names:
         min_value = min(entry.min_value for entry in records[name])
@@ -87,3 +90,8 @@ def collect_statistics(graph, dataset, params=None):
 
     graph._set_json_attr("base2_range", base2_range, "list_int")
     return graph
+
+
+def quantize(graph):
+    qgraph = graph.apply('Quantize')
+    return qgraph
