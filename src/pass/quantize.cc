@@ -3,9 +3,11 @@
  * \file quantization.cc
  * \brief Quantize the graph to lowbit operator
  */
+#include <tvm/runtime/registry.h>
 #include <nnvm/graph.h>
 #include <nnvm/pass.h>
 #include <nnvm/op_attr_types.h>
+#include <nnvm/compiler/packed_func_ext.h>
 #include <unordered_set>
 #include "../compiler/graph_transform.h"
 
@@ -75,6 +77,27 @@ NNVM_REGISTER_PASS(Quantize)
 .describe("")
 .set_body(QuantizeGraph)
 .set_change_graph(true);
+
+
+Graph CollectInternalOutputs(Graph src) {
+  std::vector<NodeEntry> outputs;
+  outputs.reserve(src.indexed_graph().num_node_entries());
+  DFSVisit(src.outputs, [&](const NodePtr& n) {
+      for (uint32_t i = 0; i < n->num_outputs(); ++i) {
+        outputs.emplace_back(NodeEntry{n, i, 0});
+      }
+    });
+
+  Graph ret;
+  ret.outputs = std::move(outputs);
+  return ret;
+}
+
+TVM_REGISTER_GLOBAL("nnvm.quantization.CollectInternalOutputs")
+.set_body([](tvm::runtime::TVMArgs args, tvm::runtime::TVMRetValue *rv) {
+    *rv = CollectInternalOutputs(args[0]);
+});
+
 }  // namespace
 }  // namespace pass
 }  // namespace nnvm
