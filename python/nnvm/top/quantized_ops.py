@@ -1,5 +1,5 @@
 # pylint: disable=invalid-name, unused-argument
-"""Quantization ops"""
+"""Quantization operators"""
 from __future__ import absolute_import
 
 import tvm
@@ -30,6 +30,24 @@ def compute_quantized_elemwise_add(attrs, inputs, _):
 
 @reg.register_schedule("quantized_elemwise_add")
 def schedule_quantized_elemwise_add(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
+
+
+@reg.register_compute("quantized_broadcast_add")
+def compute_quantized_broadcast_add(attrs, inputs, _):
+    pass
+
+@reg.register_schedule("quantized_broadcast_add")
+def schedule_quantized_broadcast_add(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
+
+
+@reg.register_compute("quantized_broadcast_mul")
+def compute_quantized_broadcast_mul(attrs, inputs, _):
+    pass
+
+@reg.register_schedule("quantized_broadcast_mul")
+def schedule_quantized_broadcast_mul(_, outs, target):
     return tvm.create_schedule([x.op for x in outs])
 
 
