@@ -1,12 +1,14 @@
 # coding: utf-8
 from __future__ import absolute_import
 import tvm
-import nnvm.graph as _graph
-import nnvm.compiler as _compiler
 from tvm.contrib import graph_runtime
-from nnvm.compiler.graph_util import infer_shape
 import numpy as np
 from collections import namedtuple
+
+from . import graph as _graph
+from . import compiler as _compiler
+from .compiler.graph_util import infer_shape, infer_dtype
+from .compiler.build_module import precompute_prune
 
 _collect_internal_outputs = tvm.get_global_func("nnvm.quantization.CollectInternalOutputs")
 
@@ -37,38 +39,48 @@ def _base2_range(num, precision=32):
         else:
             return k
 
-def execute_graph(module, inputs, oshapes):
+def execute_graph(module, inputs, oshapes, odtypes):
     module.set_input(**inputs)
     module.run()
 
     outs = []
     for i in range(len(oshapes)):
-        arr = tvm.nd.empty(oshapes[i], dtype='float32')
+        arr = tvm.nd.empty(oshapes[i], dtype=odtypes[i])
         module.get_output(i, arr)
         outs.append(arr)
 
     return outs
 
+def _shape_dtype_dict(inputs, params):
+    ishapes = {k : v.shape for k, v in inputs.items()}
+    idtypes = {k : v.dtype for k, v in inputs.items()}
+    for key, param in params.items():
+        ishapes[key] = param.shape
+        idtypes[key] = param.dtype
+    return ishapes, idtypes
 
-def collect_statistics(graph, dataset, params=None):
-    ishapes = {k : v.shape for k, v in dataset[0].items()}
-    graph = _compiler.optimize(graph, ishapes)
+
+def collect_statistics(graph, dataset, params={}):
+    ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
+    graph = _compiler.optimize(graph, ishapes, idtypes)
+    graph, params = precompute_prune(graph, params)
+    ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
 
     # transform to statistic graph
     stats_graph = _collect_internal_outputs(graph);
-    _, oshapes = infer_shape(stats_graph, **ishapes)
 
     # build module
-    stats_graph, lib, _ = _compiler.build(stats_graph.symbol, 'llvm', ishapes)
+    stats_graph, lib, _ = _compiler.build(stats_graph.symbol, 'llvm', ishapes, idtypes)
     m = graph_runtime.create(stats_graph, lib, tvm.cpu(0))
-    if params is not None:
-        m.set_input(**params)
+    m.set_input(**params)
 
     # execute and collect stats
-    out_names = stats_graph.symbol.list_output_names()
     records = {}  # dict from node name to list of entry
+    out_names = stats_graph.symbol.list_output_names()
+    _, oshapes = infer_shape(stats_graph, **ishapes)
+    _, odtypes = infer_dtype(stats_graph, **idtypes)
     for inputs in dataset:
-        outs = execute_graph(m, inputs, oshapes)
+        outs = execute_graph(m, inputs, oshapes, odtypes)
         for i, out in enumerate(outs):
             key = out_names[i]
             min_value = np.amin(out.asnumpy())
@@ -89,7 +101,7 @@ def collect_statistics(graph, dataset, params=None):
         base2_range.append(max(k0, k1))
 
     graph._set_json_attr("base2_range", base2_range, "list_int")
-    return graph
+    return graph, params
 
 
 def quantize(graph):
