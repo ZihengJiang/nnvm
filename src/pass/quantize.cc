@@ -38,15 +38,13 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
         auto fcalibrate = fcalibrate_map[n->op()];
         fcalibrate(nid, n, idx, base2_range, &dict);
       }
-      auto fquantized_op = quantized_op_map[n->op()];
-      NodePtr qnode = fquantized_op(n, dict);
-      reverse_mirror.emplace(qnode.get(), nid);
 
-      for (const auto& e : n->inputs) {
-        NodeEntry input;
+      NodePtr temp = MakeNode(n->op()->name.c_str(), n->attrs.name, n->inputs, n->attrs.dict).node;
+      for (size_t i = 0; i < temp->inputs.size(); ++i) {
+        const auto& e = temp->inputs[i];
         if (e.node->is_variable()) {
           if (quantized_var.count(e.node.get())) {
-            input = quantized_var.at(e.node.get());
+            n->inputs[i] = quantized_var.at(e.node.get());
           } else {
             int k = base2_range[idx.node_id(e.node.get())];
             float scale = float(std::pow(2, 7 - k)) * (1 - eps);
@@ -56,13 +54,14 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
             NodeEntry cast = MakeNode("cast",
               "quantize_cast_" + e.node->attrs.name, {mul}, {{"dtype", "int8"}});
             quantized_var.emplace(e.node.get(), cast);
-            input = cast;
+            temp->inputs[i] = cast;
           }
-        } else {
-          input = e;
         }
-        qnode->inputs.emplace_back(std::move(input));
       }
+
+      auto fquantized_op = quantized_op_map[n->op()];
+      NodePtr qnode = fquantized_op(temp, dict);
+      reverse_mirror.emplace(qnode.get(), nid);
 
       std::vector<NodeEntry> outputs;
       outputs.reserve(qnode->num_outputs());

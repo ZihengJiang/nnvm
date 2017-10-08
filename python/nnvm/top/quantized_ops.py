@@ -8,49 +8,6 @@ from . import registry as reg
 from .registry import OpPattern
 
 
-@reg.register_compute("quantized_elemwise_add")
-def compute_quantized_elemwise_add(attrs, inputs, _):
-    a_shift = attrs.get_int('a_shift')
-    b_shift = attrs.get_int('b_shift')
-    c_shift = attrs.get_int('c_shift')
-    out_dtype = attrs['out_type']
-    cmp_dtype = 'int16'
-
-    a_i8 = inputs[0]
-    b_i8 = inputs[1]
-    a_i16 = topi.right_shift(topi.cast(a_i8, cmp_dtype), a_shift)
-    b_i16 = topi.right_shift(topi.cast(a_i8, cmp_dtype), a_shift)
-    c_i16 = tvm.compute(a_i16.shape, lambda *i: a_i16(*i) + b_i16(*i))
-    c_i16 = topi.right_shift(c_i16, c_shift)
-    if out_dtype == 'int8':
-        c_i8 = topi.cast(topi.clip(c_i16, -127, 127), out_dtype)
-        return c_i8
-    else:
-        return c_i16
-
-@reg.register_schedule("quantized_elemwise_add")
-def schedule_quantized_elemwise_add(_, outs, target):
-    return tvm.create_schedule([x.op for x in outs])
-
-
-@reg.register_compute("quantized_broadcast_add")
-def compute_quantized_broadcast_add(attrs, inputs, _):
-    pass
-
-@reg.register_schedule("quantized_broadcast_add")
-def schedule_quantized_broadcast_add(_, outs, target):
-    return tvm.create_schedule([x.op for x in outs])
-
-
-@reg.register_compute("quantized_broadcast_mul")
-def compute_quantized_broadcast_mul(attrs, inputs, _):
-    pass
-
-@reg.register_schedule("quantized_broadcast_mul")
-def schedule_quantized_broadcast_mul(_, outs, target):
-    return tvm.create_schedule([x.op for x in outs])
-
-
 @reg.register_compute("quantized_dense")
 def compute_quantized_dense(attrs, inputs, _):
     shift = attrs.get_int('shift')
@@ -118,13 +75,4 @@ def compute_quantized_conv2d(attrs, inputs, _):
 
 @reg.register_schedule("quantized_conv2d")
 def schedule_quantized_conv2d(_, outs, target):
-    return tvm.create_schedule([x.op for x in outs])
-
-
-@reg.register_compute("quantized_avg_pool2d")
-def compute_quantized_avg_pool2d(attrs, inputs, _):
-    pass
-
-@reg.register_schedule("quantized_avg_pool2d")
-def schedule_quantized_avg_pool2d(_, outs, target):
     return tvm.create_schedule([x.op for x in outs])
