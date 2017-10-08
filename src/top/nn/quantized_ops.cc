@@ -30,102 +30,49 @@ inline bool QuantizedOpType(const nnvm::NodeAttrs& attrs,
   return true;
 }
 
-inline FQuantizedOp QuantizedOpTransformer(std::string op_name) {
+inline FQuantizedOp MakeFQuantizedOp(const char* op_name) {
   return [=] (const NodePtr& n,
               const std::unordered_map<std::string, std::string>& dict) {
-    NodePtr qnode = Node::Create();
-    qnode->attrs.op = nnvm::Op::Get(op_name);
-    qnode->attrs.name = "quantized_" + n->attrs.name;
-    qnode->attrs.dict = n->attrs.dict;
+    auto ndict = n->attrs.dict;
     for (const auto& kv : dict) {
-      qnode->attrs.dict[kv.first] = kv.second;
+      ndict[kv.first] = kv.second;
     }
-    if (qnode->attrs.op->attr_parser) {
-      qnode->attrs.op->attr_parser(&(qnode->attrs));
-    }
-    return qnode;
+    NodeEntry qnode = MakeNode(op_name, "quantized_" + n->attrs.name,
+      n->inputs, ndict);
+    return qnode.node;
+  };
+}
+
+inline FQuantizedOp MakeFQuantizedOpShiftUnaryInput(const char* op_name) {
+  return [=] (const NodePtr& n,
+              const std::unordered_map<std::string, std::string>& dict) {
+    std::string node_name = "quantized_" + n->attrs.name;
+    NodeEntry in = MakeNode("right_shift", node_name + "_shift",
+      {n->inputs[0]}, {{"bit", dict.at("shift")}});
+    NodeEntry qnode = MakeNode(op_name, node_name, {in});
+    return qnode.node;
   };
 }
 
 
-// quantized elemwise add
+inline FQuantizedOp MakeFQuantizedOpShiftBinaryInput(const char* op_name) {
+  return [=] (const NodePtr& n,
+              const std::unordered_map<std::string, std::string>& dict) {
+    std::string node_name = "quantized_" + n->attrs.name;
+    NodeEntry lhs = MakeNode("right_shift", node_name + "_lhs_shift",
+      {n->inputs[0]}, {{"bit", dict.at("shift_a")}});
+    NodeEntry rhs = MakeNode("right_shift", node_name + "_rhs_shift",
+      {n->inputs[1]}, {{"bit", dict.at("shift_b")}});
+    NodeEntry qnode = MakeNode("broadcast_add", node_name, {lhs, rhs});
+    return qnode.node;
+  };
+}
 
-struct QuantizedElemwiseAddParam :
-    public dmlc::Parameter<QuantizedElemwiseAddParam> {
-  int a_shift;
-  int b_shift;
-  int c_shift;
-  int out_type;
-  DMLC_DECLARE_PARAMETER(QuantizedElemwiseAddParam) {
-    DMLC_DECLARE_FIELD(a_shift)
-    .set_default(0);
-    DMLC_DECLARE_FIELD(b_shift)
-    .set_default(0);
-    DMLC_DECLARE_FIELD(c_shift)
-    .set_default(0);
-    DMLC_DECLARE_FIELD(out_type)
-    .set_default(kInt32)
-    .add_enum("int8", kInt8)
-    .add_enum("int16", kInt16)
-    .add_enum("int32", kInt32);
-  }
-};
 
-DMLC_REGISTER_PARAMETER(QuantizedElemwiseAddParam);
-
-NNVM_REGISTER_OP(quantized_elemwise_add)
-.set_num_inputs(2)
-.set_num_outputs(1)
-.set_attr<FInferShape>("FInferShape", ElemwiseShape<2, 1>)
-.set_attr<FInferType>("FInferType", QuantizedOpType<QuantizedElemwiseAddParam>)
-.add_argument("lhs", "Tensor", "first input")
-.add_argument("rhs", "Tensor", "second input")
-.add_arguments(QuantizedElemwiseAddParam::__FIELDS__())
-.set_attr_parser(ParamParser<QuantizedElemwiseAddParam>)
-.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<QuantizedElemwiseAddParam>);
+// quantized elemwise_add
 
 NNVM_REGISTER_OP(elemwise_add)
-.set_attr<FQuantizedOp>("FQuantizedOp", QuantizedOpTransformer("quantized_elemwise_add"));
-
-
-// quantized broadcast_add
-
-struct QuantizedBroadcastAddParam :
-    public dmlc::Parameter<QuantizedBroadcastAddParam> {
-  int shift_a;
-  int shift_b;
-  int shift_c;
-  int out_type;
-  DMLC_DECLARE_PARAMETER(QuantizedBroadcastAddParam) {
-    DMLC_DECLARE_FIELD(shift_a)
-    .set_default(0);
-    DMLC_DECLARE_FIELD(shift_b)
-    .set_default(0);
-    DMLC_DECLARE_FIELD(shift_c)
-    .set_default(0);
-    DMLC_DECLARE_FIELD(out_type)
-    .set_default(kInt32)
-    .add_enum("int8", kInt8)
-    .add_enum("int16", kInt16)
-    .add_enum("int32", kInt32);
-  }
-};
-
-DMLC_REGISTER_PARAMETER(QuantizedBroadcastAddParam);
-
-NNVM_REGISTER_OP(quantized_broadcast_add)
-.set_num_inputs(2)
-.set_num_outputs(1)
-.set_attr<FInferShape>("FInferShape", BinaryBroadcastShape)
-.set_attr<FInferType>("FInferType", ElemwiseType<2, 1>)
-.add_argument("lhs", "Tensor", "first input")
-.add_argument("rhs", "Tensor", "second input")
-.add_arguments(QuantizedBroadcastAddParam::__FIELDS__())
-.set_attr_parser(ParamParser<QuantizedBroadcastAddParam>)
-.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<QuantizedBroadcastAddParam>);
-
-NNVM_REGISTER_OP(broadcast_add)
-.set_attr<FQuantizedOp>("FQuantizedOp", QuantizedOpTransformer("quantized_broadcast_add"))
+.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOpShiftBinaryInput("elemwise_add"))
 .set_attr<FCalibrate>("FCalibrate",
   [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
      const std::vector<int>& base2_range,
@@ -136,42 +83,13 @@ NNVM_REGISTER_OP(broadcast_add)
      int k_c = base2_range[nid];
      (*dict)["shift_a"] = std::to_string(k_a - k_c);
      (*dict)["shift_b"] = std::to_string(k_b - k_c);
-     (*dict)["out_type"] = "int8";
   });
 
 
-// quantized broadcast_mul
+// quantized broadcast_add
 
-struct QuantizedBroadcastMulParam :
-    public dmlc::Parameter<QuantizedBroadcastMulParam> {
-  int shift;
-  int out_type;
-  DMLC_DECLARE_PARAMETER(QuantizedBroadcastMulParam) {
-    DMLC_DECLARE_FIELD(shift)
-    .set_default(0);
-    DMLC_DECLARE_FIELD(out_type)
-    .set_default(kInt32)
-    .add_enum("int8", kInt8)
-    .add_enum("int16", kInt16)
-    .add_enum("int32", kInt32);
-  }
-};
-
-DMLC_REGISTER_PARAMETER(QuantizedBroadcastMulParam);
-
-NNVM_REGISTER_OP(quantized_broadcast_mul)
-.set_num_inputs(2)
-.set_num_outputs(1)
-.set_attr<FInferShape>("FInferShape", BinaryBroadcastShape)
-.set_attr<FInferType>("FInferType", ElemwiseType<2, 1>)
-.add_argument("lhs", "Tensor", "first input")
-.add_argument("rhs", "Tensor", "second input")
-.add_arguments(QuantizedBroadcastMulParam::__FIELDS__())
-.set_attr_parser(ParamParser<QuantizedBroadcastMulParam>)
-.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<QuantizedBroadcastMulParam>);
-
-NNVM_REGISTER_OP(broadcast_mul)
-.set_attr<FQuantizedOp>("FQuantizedOp", QuantizedOpTransformer("quantized_broadcast_mul"))
+NNVM_REGISTER_OP(broadcast_add)
+.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOpShiftBinaryInput("broadcast_add"))
 .set_attr<FCalibrate>("FCalibrate",
   [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
      const std::vector<int>& base2_range,
@@ -180,24 +98,48 @@ NNVM_REGISTER_OP(broadcast_mul)
      int k_a = base2_range[inputs[0].node_id];
      int k_b = base2_range[inputs[1].node_id];
      int k_c = base2_range[nid];
-     int shift = (k_c - (k_a + k_b) + 7);
-     (*dict)["shift"] = std::to_string(shift);
-     (*dict)["out_type"] = "int8";
+     (*dict)["shift_a"] = std::to_string(k_a - k_c);
+     (*dict)["shift_b"] = std::to_string(k_b - k_c);
+  });
+
+
+// quantized broadcast_mul
+
+NNVM_REGISTER_OP(broadcast_mul)
+.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOpShiftBinaryInput("broadcast_mul"))
+.set_attr<FCalibrate>("FCalibrate",
+  [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
+     const std::vector<int>& base2_range,
+     std::unordered_map<std::string, std::string>* dict) {
+     const auto& inputs = idx[nid].inputs;
+     int k_a = base2_range[inputs[0].node_id];
+     int k_b = base2_range[inputs[1].node_id];
+     int k_c = base2_range[nid];
+
+     // TODO(ziheng) add storage bits as argument
+     int shift_a = k_a - 7;
+     int shift_b = k_b - 7;
+     int diff = (k_c - 7) - (shift_a + shift_b);
+     if (diff > 0) {
+        shift_a = diff / 2;
+        shift_b = diff - (diff / 2);
+     }
+
+     (*dict)["shift_a"] = std::to_string(shift_a);
+     (*dict)["shift_b"] = std::to_string(shift_b);
   });
 
 
 // quantized reshape
 
 NNVM_REGISTER_OP(reshape)
-.add_alias("quantized_reshape")
-.set_attr<FQuantizedOp>("FQuantizedOp", QuantizedOpTransformer("reshape"));
+.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("reshape"));
 
 
 // quantized relu
 
 NNVM_REGISTER_OP(relu)
-.add_alias("quantized_relu")
-.set_attr<FQuantizedOp>("FQuantizedOp", QuantizedOpTransformer("relu"));
+.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("relu"));
 
 
 // quantized dense
@@ -260,20 +202,6 @@ inline bool QuantizedDenseShape(const nnvm::NodeAttrs& attrs,
   return true;
 }
 
-inline bool QuantizedDenseType(const nnvm::NodeAttrs& attrs,
-                               std::vector<int>* in_type,
-                               std::vector<int>* out_type) {
-  const QuantizedDenseParam& param = nnvm::get<QuantizedDenseParam>(attrs.parsed);
-  if (param.use_bias) {
-    CHECK_EQ(in_type->size(), 3U) << "Input:[data, weight, bias]";
-  } else {
-    CHECK_EQ(in_type->size(), 2U) << "Input:[data, weight]";
-  }
-  CHECK_EQ(out_type->size(), 1U);
-  NNVM_ASSIGN_OUTPUT_TYPE(attrs, *out_type, 0, param.out_type);
-  return true;
-}
-
 NNVM_REGISTER_OP(quantized_dense)
 .describe(R"code(Applies a linear transformation: :math:`Y = XW^T + b`.
 
@@ -297,11 +225,11 @@ If ``use_bias`` is set to be false, then the ``bias`` term is ignored.
 .set_num_inputs(UseBiasNumInputs<QuantizedDenseParam>)
 .set_attr<FListInputNames>("FListInputNames", UseBiasListInputNames<QuantizedDenseParam>)
 .set_attr<FInferShape>("FInferShape", QuantizedDenseShape)
-.set_attr<FInferType>("FInferType", QuantizedDenseType)
+.set_attr<FInferType>("FInferType", QuantizedOpType<QuantizedDenseParam>)
 .set_support_level(1);
 
 NNVM_REGISTER_OP(dense)
-.set_attr<FQuantizedOp>("FQuantizedOp", QuantizedOpTransformer("quantized_dense"))
+.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("quantized_dense"))
 .set_attr<FCalibrate>("FCalibrate",
   [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
      const std::vector<int>& base2_range,
@@ -496,7 +424,7 @@ a bias vector is created and added to the outputs.
 .set_support_level(2);
 
 NNVM_REGISTER_OP(conv2d)
-.set_attr<FQuantizedOp>("FQuantizedOp", QuantizedOpTransformer("quantized_conv2d"))
+.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("quantized_conv2d"))
 .set_attr<FCalibrate>("FCalibrate",
   [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
      const std::vector<int>& base2_range,
@@ -514,75 +442,13 @@ NNVM_REGISTER_OP(conv2d)
 // quantized max_pool2d
 
 NNVM_REGISTER_OP(max_pool2d)
-.add_alias("quantized_max_pool2d")
-.set_attr<FQuantizedOp>("FQuantizedOp", QuantizedOpTransformer("max_pool2d"));
+.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("max_pool2d"));
 
 
 // quantized avg_global_pool2d
 
-struct QuantizedGlobalPool2DParam : public dmlc::Parameter<QuantizedGlobalPool2DParam> {
-  int layout;
-  int shift;
-  int out_type;
-
-  DMLC_DECLARE_PARAMETER(QuantizedGlobalPool2DParam) {
-    DMLC_DECLARE_FIELD(layout)
-      .add_enum("NCHW", kNCHW)
-      .add_enum("NHWC", kNHWC)
-      .set_default(kNCHW)
-      .describe("Dimension ordering of data and weight. Can be 'NCHW', 'NHWC', etc."
-                "'N', 'C', 'H', 'W' stands for batch, channel, height, and width"
-                "dimensions respectively. Convolution is applied on the 'H' and"
-                "'W' dimensions.");
-    DMLC_DECLARE_FIELD(shift)
-    .set_default(0);
-    DMLC_DECLARE_FIELD(out_type)
-    .set_default(kInt32)
-    .add_enum("int8", kInt8)
-    .add_enum("int16", kInt16)
-    .add_enum("int32", kInt32);
-  }
-};
-
-DMLC_REGISTER_PARAMETER(QuantizedGlobalPool2DParam);
-
-inline bool QuantizedGlobalPool2DInferShape(const nnvm::NodeAttrs& attrs,
-                                            std::vector<TShape>* in_shape,
-                                            std::vector<TShape>* out_shape) {
-  const QuantizedGlobalPool2DParam& param = nnvm::get<QuantizedGlobalPool2DParam>(attrs.parsed);
-  CHECK_EQ(in_shape->size(), 1U);
-  CHECK_EQ(out_shape->size(), 1U);
-  TShape dshape = (*in_shape)[0];
-  if (dshape.ndim() ==  0) return false;
-  dshape = ConvertLayout(dshape, param.layout, kNCHW);
-  TShape oshape = dshape;
-  oshape[2] = oshape[3] = 1;
-  oshape = ConvertLayout(oshape, kNCHW, param.layout);
-  NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_shape, 0, oshape);
-  return true;
-}
-
-NNVM_REGISTER_OP(quantized_global_avg_pool2d)
-.describe(R"code(Global average pooling operation for 2D data.
-
-- **data**: This depends on the `layout` parameter. Input is 4D array of shape
-            (batch_size, channels, height, width) if `layout` is `NCHW`.
-- **out**: This depends on the `layout` parameter. Output is 4D array of shape
-           (batch_size, channels, 1, 1)  if `layout` is `NCHW`.
-
-)code" NNVM_ADD_FILELINE)
-.add_argument("data", "4D Tensor", "Input data.")
-.add_arguments(QuantizedGlobalPool2DParam::__FIELDS__())
-.set_attr_parser(ParamParser<QuantizedGlobalPool2DParam>)
-.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<QuantizedGlobalPool2DParam>)
-.set_attr<FInferShape>("FInferShape", QuantizedGlobalPool2DInferShape)
-.set_attr<FInferType>("FInferType", ElemwiseType<1, 1>)
-.set_num_outputs(1)
-.set_num_inputs(1)
-.set_support_level(2);
-
 NNVM_REGISTER_OP(global_avg_pool2d)
-.set_attr<FQuantizedOp>("FQuantizedOp", QuantizedOpTransformer("quantized_global_avg_pool2d"))
+.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOpShiftUnaryInput("global_avg_pool2d"))
 .set_attr<FCalibrate>("FCalibrate",
   [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
      const std::vector<int>& base2_range,
@@ -590,9 +456,8 @@ NNVM_REGISTER_OP(global_avg_pool2d)
      const auto& inputs = idx[nid].inputs;
      int k_i = base2_range[inputs[0].node_id];
      int k_o = base2_range[nid];
-     int shift = (k_o - k_i);
+     int shift = (k_i - k_o);
      (*dict)["shift"] = std::to_string(shift);
-     (*dict)["out_type"] = "int8";
   });
 
 }  // namespace top
