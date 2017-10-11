@@ -69,6 +69,7 @@ struct CastParam : public dmlc::Parameter<CastParam> {
     .add_enum("uint8", kUint8)
     .add_enum("int32", kInt32)
     .add_enum("int8", kInt8)
+    .add_enum("int16", kInt16)
     .describe("Output data type.");
   }
 };
