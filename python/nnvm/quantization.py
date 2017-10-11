@@ -28,7 +28,7 @@ def _base2_range(num, precision=32):
     while True:
         if num > 1:
             if not greater:
-                return k
+                return k + 1
             num = num / 2
             k = k + 1
         elif num < 1:
@@ -51,12 +51,13 @@ def execute_graph(module, inputs, oshapes, odtypes):
 
     return outs
 
-def _shape_dtype_dict(inputs, params):
+def _shape_dtype_dict(inputs, params=None):
     ishapes = {k : v.shape for k, v in inputs.items()}
     idtypes = {k : v.dtype for k, v in inputs.items()}
-    for key, param in params.items():
-        ishapes[key] = param.shape
-        idtypes[key] = param.dtype
+    if params is not None:
+        for key, param in params.items():
+            ishapes[key] = param.shape
+            idtypes[key] = param.dtype
     return ishapes, idtypes
 
 
@@ -104,6 +105,7 @@ def collect_statistics(graph, dataset, params={}):
     return graph, params
 
 
-def quantize(graph):
+def quantize(graph, debug=False):
+    graph._set_json_attr("debug", int(debug), "int")
     qgraph = graph.apply('Quantize')
     return qgraph
