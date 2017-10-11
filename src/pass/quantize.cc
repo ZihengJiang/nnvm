@@ -21,15 +21,46 @@ namespace {
 using compiler::FQuantizedOp;
 using compiler::FCalibrate;
 
+static constexpr float eps = 1e-04;
+
+inline NodeEntry MakeQuantizeNode(NodeEntry e, int k) {
+  // cast(round(x / 2^k * (2^7 - 0.5 * (1 + eps))))
+  // float scale = (float(std::pow(2, 7)) - 0.5 * (1 + eps)) / std::pow(2, k);
+  float scale = float(std::pow(2, 7 - k)) * (1 - eps);
+
+  NodeEntry mul = MakeNode("__mul_scalar__",
+    "quantize_mul_" + e.node->attrs.name, {e}, {{"scalar", std::to_string(scale)}});
+  // NodeEntry round = MakeNode("round",
+  //   "quantize_round_" + e.node->attrs.name, {mul});
+  NodeEntry cast = MakeNode("cast",
+    "quantize_cast_" + e.node->attrs.name, {mul}, {{"dtype", "int8"}});
+  return cast;
+}
+
+inline NodeEntry MakeDequantizeNode(NodeEntry e, int k) {
+  // cast(x) * 2^k) / (2^7 - 0.5 * (1 + eps))
+  // float scale = float(std::pow(2, k)) / (std::pow(2, 7) - 0.5 * (1 + eps));
+  float scale = float(std::pow(2, k - 7)) / (1 - eps);
+
+  NodeEntry cast = MakeNode("cast",
+    "dequantize_cast_" + e.node->attrs.name, {e}, {{"dtype", "float32"}});
+  NodeEntry mul = MakeNode("__mul_scalar__",
+    "dequantize_mul_" + e.node->attrs.name, {cast}, {{"scalar", std::to_string(scale)}});
+
+  return mul;
+}
+
+
 Graph QuantizeGraph(nnvm::Graph&& src) {
   static auto& quantized_op_map = Op::GetAttr<FQuantizedOp>("FQuantizedOp");
   static auto& fcalibrate_map = Op::GetAttr<FCalibrate>("FCalibrate");
   const auto& base2_range = src.GetAttr<std::vector<int>>("base2_range");
-  static constexpr float eps = 1e-04;
+  int debug = src.GetAttr<int>("debug");
   const auto& idx = src.indexed_graph();
   std::unordered_map<Node*, NodeEntry> quantized_var;
   std::unordered_map<Node*, int> reverse_mirror;
 
+  std::vector<NodeEntry> debug_outputs;
   auto transform = [&](uint32_t nid, const NodePtr& n, std::vector<NodeEntry>* ret) {
     if (n->is_variable()) return false;
     if (quantized_op_map.count(n->op())) {
@@ -47,14 +78,9 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
             n->inputs[i] = quantized_var.at(e.node.get());
           } else {
             int k = base2_range[idx.node_id(e.node.get())];
-            float scale = float(std::pow(2, 7 - k)) * (1 - eps);
-
-            NodeEntry mul = MakeNode("__mul_scalar__",
-              "quantize_mul_" + e.node->attrs.name, {e}, {{"scalar", std::to_string(scale)}});
-            NodeEntry cast = MakeNode("cast",
-              "quantize_cast_" + e.node->attrs.name, {mul}, {{"dtype", "int8"}});
-            quantized_var.emplace(e.node.get(), cast);
-            temp->inputs[i] = cast;
+            NodeEntry quantize = MakeQuantizeNode(e, k);
+            quantized_var.emplace(e.node.get(), quantize);
+            temp->inputs[i] = quantize;
           }
         }
       }
@@ -67,6 +93,9 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
       outputs.reserve(qnode->num_outputs());
       for (uint32_t i = 0; i < qnode->num_outputs(); ++i) {
         outputs.emplace_back(NodeEntry{qnode, 0, i});
+        if (debug) {
+          debug_outputs.emplace_back(NodeEntry{qnode, 0, i});
+        }
       }
       *ret = std::move(outputs);
       return true;
@@ -78,18 +107,14 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
 
   Graph ret = compiler::GraphTransform(std::move(src), transform);
   std::vector<NodeEntry> outputs;
-  outputs.reserve(outputs.size());
-  for (const auto& e : ret.outputs) {
+  const std::vector<NodeEntry>& src_outputs = debug ? debug_outputs : ret.outputs;
+  outputs.reserve(src_outputs.size());
+  for (const auto& e : src_outputs) {
     int k = base2_range[reverse_mirror.at(e.node.get())];
-    float scale = float(std::pow(2, k)) / std::pow(2, 7) / (1 - eps);
-
-    NodeEntry cast = MakeNode("cast",
-      "dequantize_cast_" + e.node->attrs.name, {e}, {{"dtype", "float32"}});
-    NodeEntry mul = MakeNode("__mul_scalar__",
-      "dequantize_mul_" + e.node->attrs.name, {cast}, {{"scalar", std::to_string(scale)}});
-    outputs.emplace_back(mul);
+    NodeEntry dequantize = MakeDequantizeNode(e, k);
+    outputs.emplace_back(dequantize);
   }
-  ret.outputs = outputs;
+  ret.outputs = std::move(outputs);
   return ret;
 }
 
@@ -99,10 +124,11 @@ NNVM_REGISTER_PASS(Quantize)
 .set_change_graph(true);
 
 
-Graph CollectInternalOutputs(Graph src) {
+Graph CollectInternalOutputs(Graph src, bool include_vars=true) {
   std::vector<NodeEntry> outputs;
   outputs.reserve(src.indexed_graph().num_node_entries());
   DFSVisit(src.outputs, [&](const NodePtr& n) {
+      if (!include_vars && n->is_variable()) return;
       for (uint32_t i = 0; i < n->num_outputs(); ++i) {
         outputs.emplace_back(NodeEntry{n, i, 0});
       }
@@ -115,7 +141,11 @@ Graph CollectInternalOutputs(Graph src) {
 
 TVM_REGISTER_GLOBAL("nnvm.quantization.CollectInternalOutputs")
 .set_body([](tvm::runtime::TVMArgs args, tvm::runtime::TVMRetValue *rv) {
+  if (args.size() == 1) {
     *rv = CollectInternalOutputs(args[0]);
+  } else {
+    *rv = CollectInternalOutputs(args[0], args[1]);
+  }
 });
 
 }  // namespace

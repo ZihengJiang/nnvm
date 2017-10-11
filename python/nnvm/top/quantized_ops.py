@@ -10,7 +10,7 @@ from .registry import OpPattern
 
 @reg.register_compute("quantized_dense")
 def compute_quantized_dense(attrs, inputs, _):
-    shift = attrs.get_int('shift')
+    shift_out = attrs.get_int('shift_out')
     out_dtype = attrs['out_type']
     cmp_dtype = 'int32' # compute data type
     data   = inputs[0]
@@ -21,9 +21,15 @@ def compute_quantized_dense(attrs, inputs, _):
     k = tvm.reduce_axis((0, l), name='k')
     out_i16 = tvm.compute((m, n),
         lambda i, j: tvm.sum(data[i][k].astype(cmp_dtype) * weight[j][k].astype(cmp_dtype), axis=k))
-    out_i16 = topi.right_shift(out_i16, shift)
+
+    if attrs.get_bool("use_bias"):
+        bias = inputs[2]
+        shift_bias = attrs.get_int("shift_bias")
+        bias_i16 = topi.right_shift(topi.cast(bias, cmp_dtype), shift_bias)
+        out_i16 = topi.broadcast_add(out_i16, bias_i16)
 
     if out_dtype == 'int8':
+        out_i16 = topi.right_shift(out_i16, shift_out)
         return topi.cast(topi.clip(out_i16, -127, 127), out_dtype)
     else:
         return out_i16
@@ -43,7 +49,7 @@ def compute_quantized_conv2d(attrs, inputs, _):
     layout = attrs["layout"]
     shift = attrs.get_int('shift')
     out_dtype = attrs['out_type']
-    cmp_dtype = 'int16' # compute data type
+    cmp_dtype = 'int32' # compute data type
 
     assert layout == "NCHW", "only support nchw for now"
     assert dilation == (1, 1), "not support dilate now"
