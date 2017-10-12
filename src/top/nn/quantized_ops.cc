@@ -89,6 +89,58 @@ inline FQuantizedOp MakeFQuantizedOpCastBinaryInput(const char* op_name) {
   };
 }
 
+
+// quantize
+
+struct QuantizeParam : public dmlc::Parameter<QuantizeParam> {
+  int k;
+  int out_type;
+
+  DMLC_DECLARE_PARAMETER(QuantizeParam) {
+    DMLC_DECLARE_FIELD(k);
+    DMLC_DECLARE_FIELD(out_type)
+    .set_default(kInt8)
+    .add_enum("int8", kInt8)
+    .add_enum("int16", kInt16)
+    .add_enum("int32", kInt32);
+  };
+};
+
+DMLC_REGISTER_PARAMETER(QuantizeParam);
+
+NNVM_REGISTER_OP(quantize)
+.set_num_inputs(1)
+.set_num_outputs(1)
+.set_attr<FInferShape>("FInferShape", ElemwiseShape<1, 1>)
+.set_attr<FInferType>("FInferType", QuantizedOpType<QuantizeParam>)
+.add_argument("data", "Tensor", "The input tensor.")
+.add_arguments(QuantizeParam::__FIELDS__())
+.set_attr_parser(ParamParser<QuantizeParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<QuantizeParam>);
+
+
+// dequantize
+inline bool DequantizeType(const nnvm::NodeAttrs& attrs,
+                           std::vector<int>* in_type,
+                           std::vector<int>* out_type) {
+  CHECK_EQ(out_type->size(), 1U);
+  NNVM_ASSIGN_OUTPUT_TYPE(attrs, *out_type, 0, 0);
+  return true;
+}
+
+NNVM_REGISTER_OP(dequantize)
+.set_num_inputs(1)
+.set_num_outputs(1)
+.set_attr<FInferShape>("FInferShape", ElemwiseShape<1, 1>)
+.set_attr<FInferType>("FInferType", DequantizeType)
+.add_argument("data", "Tensor", "The input tensor.")
+.add_arguments(QuantizeParam::__FIELDS__())
+.set_attr_parser(ParamParser<QuantizeParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<QuantizeParam>);
+
+
+// quantized elemwise_add
+
 // quantized elemwise_add
 
 NNVM_REGISTER_OP(elemwise_add)
