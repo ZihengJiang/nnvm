@@ -24,30 +24,15 @@ using compiler::FCalibrate;
 static constexpr float eps = 1e-04;
 
 inline NodeEntry MakeQuantizeNode(NodeEntry e, int k) {
-  // cast(round(x / 2^k * (2^7 - 0.5 * (1 + eps))))
-  // float scale = (float(std::pow(2, 7)) - 0.5 * (1 + eps)) / std::pow(2, k);
-  float scale = float(std::pow(2, 7 - k)) * (1 - eps);
-
-  NodeEntry mul = MakeNode("__mul_scalar__",
-    "quantize_mul_" + e.node->attrs.name, {e}, {{"scalar", std::to_string(scale)}});
-  // NodeEntry round = MakeNode("round",
-  //   "quantize_round_" + e.node->attrs.name, {mul});
-  NodeEntry cast = MakeNode("cast",
-    "quantize_cast_" + e.node->attrs.name, {mul}, {{"dtype", "int8"}});
-  return cast;
+  NodeEntry quantize = MakeNode("quantize",
+    "quantize_" + e.node->attrs.name, {e}, {{"k", std::to_string(k)}});
+  return quantize;
 }
 
 inline NodeEntry MakeDequantizeNode(NodeEntry e, int k) {
-  // cast(x) * 2^k) / (2^7 - 0.5 * (1 + eps))
-  // float scale = float(std::pow(2, k)) / (std::pow(2, 7) - 0.5 * (1 + eps));
-  float scale = float(std::pow(2, k - 7)) / (1 - eps);
-
-  NodeEntry cast = MakeNode("cast",
-    "dequantize_cast_" + e.node->attrs.name, {e}, {{"dtype", "float32"}});
-  NodeEntry mul = MakeNode("__mul_scalar__",
-    "dequantize_mul_" + e.node->attrs.name, {cast}, {{"scalar", std::to_string(scale)}});
-
-  return mul;
+  NodeEntry dequantize = MakeNode("dequantize",
+    "dequantize_" + e.node->attrs.name, {e}, {{"k", std::to_string(k)}});
+  return dequantize;
 }
 
 

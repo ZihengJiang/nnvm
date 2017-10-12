@@ -7,6 +7,37 @@ import topi
 from . import registry as reg
 from .registry import OpPattern
 
+@reg.register_compute("quantize")
+def compute_quantize(attrs, inputs, _):
+    k = attrs.get_int('k')
+    out_dtype = attrs['out_type']
+    assert out_dtype == 'int8'
+    data = inputs[0]
+    scale = float(pow(2, 7) - 1) / pow(2, k)
+    mul = tvm.compute(data.shape, lambda *i: data(*i) * scale)
+    cast = tvm.compute(data.shape, lambda *i: tvm.select(mul(*i) < 0, (mul(*i) - 0.5).astype(out_dtype), (mul(*i) + 0.5).astype(out_dtype)))
+    return cast
+
+
+@reg.register_schedule("quantize")
+def schedule_quantize(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
+
+
+@reg.register_compute("dequantize")
+def compute_dequantize(attrs, inputs, _):
+    k = attrs.get_int('k')
+    out_dtype = attrs['out_type']
+    assert out_dtype == 'int8'
+    data = inputs[0]
+    scale = pow(2, k) / float(pow(2, 7) - 1)
+    mul = tvm.compute(data.shape, lambda *i: data(*i) * scale)
+    return mul
+
+
+@reg.register_schedule("dequantize")
+def schedule_dequantize(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
 
 @reg.register_compute("quantized_dense")
 def compute_quantized_dense(attrs, inputs, _):
