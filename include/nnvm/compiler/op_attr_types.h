@@ -103,7 +103,7 @@ using FCalibrate = std::function<void(
     uint32_t nid,
     const NodePtr& n,
     const nnvm::IndexedGraph& idx,
-    const std::vector<int>& base2_range,
+    const std::vector<float>& scales,
     std::unordered_map<std::string, std::string>* dict)>;
 }  // namespace compiler
 }  // namespace nnvm

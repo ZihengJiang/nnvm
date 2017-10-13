@@ -23,15 +23,15 @@ using compiler::FCalibrate;
 
 static constexpr float eps = 1e-04;
 
-inline NodeEntry MakeQuantizeNode(NodeEntry e, int k) {
+inline NodeEntry MakeQuantizeNode(NodeEntry e, float s) {
   NodeEntry quantize = MakeNode("quantize",
-    "quantize_" + e.node->attrs.name, {e}, {{"k", std::to_string(k)}});
+    "quantize_" + e.node->attrs.name, {e}, {{"scale", std::to_string(s)}});
   return quantize;
 }
 
-inline NodeEntry MakeDequantizeNode(NodeEntry e, int k) {
+inline NodeEntry MakeDequantizeNode(NodeEntry e, float s) {
   NodeEntry dequantize = MakeNode("dequantize",
-    "dequantize_" + e.node->attrs.name, {e}, {{"k", std::to_string(k)}});
+    "dequantize_" + e.node->attrs.name, {e}, {{"scale", std::to_string(s)}});
   return dequantize;
 }
 
@@ -39,7 +39,13 @@ inline NodeEntry MakeDequantizeNode(NodeEntry e, int k) {
 Graph QuantizeGraph(nnvm::Graph&& src) {
   static auto& quantized_op_map = Op::GetAttr<FQuantizedOp>("FQuantizedOp");
   static auto& fcalibrate_map = Op::GetAttr<FCalibrate>("FCalibrate");
-  const auto& base2_range = src.GetAttr<std::vector<int>>("base2_range");
+  // const auto& base2_range = src.GetAttr<std::vector<int>>("base2_range");
+  const auto& scales_str = src.GetAttr<std::vector<std::string>>("scales");
+  std::vector<float> scales;
+  scales.reserve(scales_str.size());
+  for (const auto& s : scales_str) {
+    scales.emplace_back(std::stof(s));
+  }
   int debug = src.GetAttr<int>("debug");
   const auto& idx = src.indexed_graph();
   std::unordered_map<Node*, NodeEntry> quantized_var;
@@ -52,7 +58,7 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
       std::unordered_map<std::string, std::string> dict;
       if (fcalibrate_map.count(n->op())) {
         auto fcalibrate = fcalibrate_map[n->op()];
-        fcalibrate(nid, n, idx, base2_range, &dict);
+        fcalibrate(nid, n, idx, scales, &dict);
       }
 
       NodePtr temp = MakeNode(n->op()->name.c_str(), n->attrs.name, n->inputs, n->attrs.dict).node;
@@ -62,8 +68,8 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
           if (quantized_var.count(e.node.get())) {
             n->inputs[i] = quantized_var.at(e.node.get());
           } else {
-            int k = base2_range[idx.node_id(e.node.get())];
-            NodeEntry quantize = MakeQuantizeNode(e, k);
+            float s = scales[idx.node_id(e.node.get())];
+            NodeEntry quantize = MakeQuantizeNode(e, s);
             quantized_var.emplace(e.node.get(), quantize);
             temp->inputs[i] = quantize;
           }
@@ -95,8 +101,8 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
   const std::vector<NodeEntry>& src_outputs = debug ? debug_outputs : ret.outputs;
   outputs.reserve(src_outputs.size());
   for (const auto& e : src_outputs) {
-    int k = base2_range[reverse_mirror.at(e.node.get())];
-    NodeEntry dequantize = MakeDequantizeNode(e, k);
+    float s = scales[reverse_mirror.at(e.node.get())];
+    NodeEntry dequantize = MakeDequantizeNode(e, s);
     outputs.emplace_back(dequantize);
   }
   ret.outputs = std::move(outputs);

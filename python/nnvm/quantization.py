@@ -93,15 +93,21 @@ def collect_statistics(graph, dataset, params={}):
                 records[key] = [entry]
 
     # analysis
-    base2_range = []
+    # print('records:')
+    # base2_range = []
+    scales = []
     for name in out_names:
         min_value = min(entry.min_value for entry in records[name])
         max_value = max(entry.max_value for entry in records[name])
-        k0 = _base2_range(min_value)
-        k1 = _base2_range(max_value)
-        base2_range.append(max(k0, k1))
+        print('{}: {}, {}'.format(name, min_value, max_value))
+        scales.append(str(max(abs(min_value), abs(max_value))))
+        # k0 = _base2_range(min_value)
+        # k1 = _base2_range(max_value)
+        # print("{}: {}, {}".format(name, k0, k1))
+        # base2_range.append(max(k0, k1))
 
-    graph._set_json_attr("base2_range", base2_range, "list_int")
+    graph._set_json_attr("scales", scales, "list_str")
+    # graph._set_json_attr("base2_range", base2_range, "list_int")
     return graph, params
 
 
