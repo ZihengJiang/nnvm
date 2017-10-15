@@ -65,11 +65,23 @@ def schedule_rshift(_, outs, target):
 def compute_clip(attrs, inputs, _):
     data = inputs[0]
     a_min = attrs.get_float("a_min")
+    a_min = tvm.const(a_min, dtype=data.dtype)
     a_max = attrs.get_float("a_max")
+    a_max = tvm.const(a_max, dtype=data.dtype)
     return tvm.compute(data.shape, lambda *i: tvm.max(tvm.min(data(*i), a_max), a_min), tag='clip')
 
 @reg.register_schedule("clip")
 def schedule_clip(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
+
+
+@reg.register_compute("identity")
+def compute_identity(attrs, inputs, _):
+    data = inputs[0]
+    return tvm.compute(data.shape, lambda *i: data(*i))
+
+@reg.register_schedule("identity")
+def schedule_identity(_, outs, target):
     return tvm.create_schedule([x.op for x in outs])
 
 

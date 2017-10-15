@@ -562,8 +562,57 @@ NNVM_REGISTER_OP(quantized_conv2d)
 .set_support_level(2);
 
 NNVM_REGISTER_OP(conv2d)
-.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("quantized_conv2d"))
-.set_attr<FCalibrate>("FCalibrate", MultiplicationCalibrate)
+.set_attr<FQuantizedOp>("FQuantizedOp",
+[] (const NodePtr& n, const std::unordered_map<std::string, std::string>& dict) {
+  std::string node_name = n->attrs.name;
+  std::string lname = n->inputs[0].node->attrs.name;
+  std::string rname = n->inputs[1].node->attrs.name;
+  int shift_a = std::stoi(dict.at("shift_a"));
+  int shift_b = std::stoi(dict.at("shift_b"));
+  NodeEntry lhs = MakeNode("cast", lname + "_cast",
+    {n->inputs[0]}, {{"dtype", "int16"}});
+  NodeEntry rhs = MakeNode("cast", rname + "_cast",
+    {n->inputs[1]}, {{"dtype", "int16"}});
+  NodeEntry lhs_shift = lhs;
+  if (shift_a != 0) {
+    lhs_shift = MakeNode("noise_shift", lname + "_rshift",
+      {lhs}, {{"bit", dict.at("shift_a")}});
+  }
+  NodeEntry rhs_shift = rhs;
+  if (shift_b != 0) {
+    rhs_shift = MakeNode("noise_shift", rname + "_rshift",
+      {rhs}, {{"bit", dict.at("shift_b")}});
+  }
+
+  std::unordered_map<std::string, std::string> ndict = n->attrs.dict;
+  ndict["shift"] = dict.at("shift_c");
+  ndict["out_type"] = dict.at("out_type");
+  NodeEntry qnode = MakeNode("quantized_conv2d", node_name + "_quantized",
+    {lhs_shift, rhs_shift}, ndict);
+  return qnode.node;
+})
+.set_attr<FCalibrate>("FCalibrate",
+[] (uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
+    const std::vector<int>& base2_range,
+   std::unordered_map<std::string, std::string>* dict) {
+  const auto& inputs = idx[nid].inputs;
+  int ka = base2_range[inputs[0].node_id];
+  int kb = base2_range[inputs[1].node_id];
+  int kc = base2_range[nid];
+
+  int sa = 0;
+  int sb = 0;
+  int diff = (kc + 14 - 15 - (ka + kb));
+  if (diff > 0) {
+    sa += diff / 2;
+    sb += diff - diff / 2;
+  }
+  int sc = kc + 14 - (ka + kb) - (sa + sb) - 7;
+  (*dict)["shift_a"] = std::to_string(sa);
+  (*dict)["shift_b"] = std::to_string(sb);
+  (*dict)["shift_c"] = std::to_string(sc);
+  (*dict)["out_type"] = "int8";
+})
 .set_attr<FSeparateBias>("FSeparateBias", [] (const NodePtr& n) {
   const Conv2DParam& param = nnvm::get<Conv2DParam>(n->attrs.parsed);
   if (param.use_bias == false) return std::vector<NodeEntry>({NodeEntry{n, 0, 0}});
@@ -578,7 +627,6 @@ NNVM_REGISTER_OP(conv2d)
     {node, expand});
   return std::vector<NodeEntry>({node_with_bias});
 });
-
 
 
 // quantized max_pool2d
