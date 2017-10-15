@@ -105,6 +105,9 @@ using FCalibrate = std::function<void(
     const nnvm::IndexedGraph& idx,
     const std::vector<int>& base2_range,
     std::unordered_map<std::string, std::string>* dict)>;
+
+using FSeparateBias = std::function<std::vector<NodeEntry>(
+    const NodePtr& n)>;
 }  // namespace compiler
 }  // namespace nnvm
 #endif  // NNVM_COMPILER_OP_ATTR_TYPES_H_

@@ -19,6 +19,7 @@ namespace top {
 
 using compiler::FQuantizedOp;
 using compiler::FCalibrate;
+using compiler::FSeparateBias;
 
 template<typename TParam>
 inline bool QuantizedOpType(const nnvm::NodeAttrs& attrs,
@@ -30,63 +31,160 @@ inline bool QuantizedOpType(const nnvm::NodeAttrs& attrs,
   return true;
 }
 
-inline FQuantizedOp MakeFQuantizedOp(const char* op_name) {
+inline FQuantizedOp DefaultQuantizedOp(const char* op_name) {
+  // identity, reshape, flatten, max_pool2d
+  // dense, conv2d
   return [=] (const NodePtr& n,
               const std::unordered_map<std::string, std::string>& dict) {
     auto ndict = n->attrs.dict;
     for (const auto& kv : dict) {
       ndict[kv.first] = kv.second;
     }
-    NodeEntry qnode = MakeNode(op_name, "quantized_" + n->attrs.name,
+    NodeEntry qnode = MakeNode(op_name, n->attrs.name + "_quantized",
       n->inputs, ndict);
     return qnode.node;
   };
 }
 
-inline FQuantizedOp MakeFQuantizedOpShiftUnaryInput(const char* op_name) {
+
+inline FQuantizedOp ExpandQuantizedOp(const char* op_name) {
+  // relu, global_avg_pool
   return [=] (const NodePtr& n,
               const std::unordered_map<std::string, std::string>& dict) {
-    std::string node_name = "quantized_" + n->attrs.name;
-    NodeEntry in = MakeNode("right_shift", node_name + "_shift",
-      {n->inputs[0]}, {{"bit", dict.at("shift")}});
-    NodeEntry qnode = MakeNode(op_name, node_name, {in});
-    return qnode.node;
+    std::string node_name = n->attrs.name;
+    int bit = std::stoi(dict.at("shift"));
+    if (bit == 0) {
+      return MakeNode(op_name, node_name + "_quantized",
+        {n->inputs[0]}, n->attrs.dict).node;
+    }
+    CHECK_GT(bit, 0);
+    NodeEntry casti16 = MakeNode("cast", n->inputs[0].node->attrs.name + "_cast",
+      {n->inputs[0]}, {{"dtype", "int16"}});
+    NodeEntry qnode = MakeNode(op_name, node_name + "_quantized",
+      {casti16}, n->attrs.dict);
+    NodeEntry shift = MakeNode("left_shift", node_name + "_lshift",
+      {qnode}, {{"bit", dict.at("shift")}});
+    NodeEntry clip = MakeNode("clip", node_name + "_clip",
+      {shift}, {{"a_min", "-127"}, {"a_max", "127"}});
+    NodeEntry casti8 = MakeNode("cast", node_name + "_cast",
+      {clip}, {{"dtype", "int8"}});
+    return casti8.node;
   };
 }
 
 
-inline FQuantizedOp MakeFQuantizedOpShiftBinaryInput(const char* op_name) {
+inline FQuantizedOp AdditionQuantizedOp(const char* op_name) {
+  // elemwise_add, broadcast_add
   return [=] (const NodePtr& n,
               const std::unordered_map<std::string, std::string>& dict) {
-    LOG(INFO) << "[" << n->attrs.name << ", "
-              << n->op()->name << "] (s_a=" << dict.at("shift_a")
-              << ", s_b=" << dict.at("shift_b") << ")";
-    NodeEntry lhs = MakeNode("right_shift", n->inputs[0].node->attrs.name + "_shift",
-      {n->inputs[0]}, {{"bit", dict.at("shift_a")}});
-    NodeEntry rhs = MakeNode("right_shift", n->inputs[1].node->attrs.name + "_shift",
-      {n->inputs[1]}, {{"bit", dict.at("shift_b")}});
-    NodeEntry qnode = MakeNode(op_name, "quantized_" + n->attrs.name, {lhs, rhs});
-    return qnode.node;
+    std::string node_name = n->attrs.name;
+    std::string lname = n->inputs[0].node->attrs.name;
+    std::string rname = n->inputs[1].node->attrs.name;
+    int shift_a = std::stoi(dict.at("shift_a"));
+    int shift_b = std::stoi(dict.at("shift_b"));
+    int shift_c = std::stoi(dict.at("shift_c"));
+    NodeEntry lhs = MakeNode("cast", lname + "_cast",
+      {n->inputs[0]}, {{"dtype", "int16"}});
+    NodeEntry rhs = MakeNode("cast", rname + "_cast",
+      {n->inputs[1]}, {{"dtype", "int16"}});
+    NodeEntry lhs_shift = lhs;
+    if (shift_a != 0) {
+      lhs_shift = MakeNode("left_shift", lname + "_lshift",
+        {lhs}, {{"bit", dict.at("shift_a")}});
+    }
+    NodeEntry rhs_shift = rhs;
+    if (shift_b != 0) {
+      rhs_shift = MakeNode("left_shift", rname + "_lshift",
+        {rhs}, {{"bit", dict.at("shift_b")}});
+    }
+    NodeEntry qnode = MakeNode(op_name, node_name + "_quantized", {lhs_shift, rhs_shift});
+    NodeEntry out_shift = qnode;
+    if (shift_c != 0) {
+      CHECK_GT(shift_c, 0);
+      out_shift = MakeNode("noise_shift", node_name + "_rshift",
+        {qnode}, {{"bit", dict.at("shift_c")}});
+    }
+    NodeEntry clip = MakeNode("clip", "quantized_" + node_name + "_clip",
+      {out_shift}, {{"a_min", "-127"}, {"a_max", "127"}});
+    NodeEntry cast = MakeNode("cast", "quantized_" + node_name + "_cast",
+      {clip}, {{"dtype", "int8"}});
+    return cast.node;
   };
 }
 
 
-inline FQuantizedOp MakeFQuantizedOpCastBinaryInput(const char* op_name) {
+inline FQuantizedOp MultiplicationQuantizedOp(const char* op_name) {
+  // elemwise_mul, broadcast_mul
   return [=] (const NodePtr& n,
               const std::unordered_map<std::string, std::string>& dict) {
+    std::string node_name = n->attrs.name;
     NodeEntry lhs = MakeNode("cast", n->inputs[0].node->attrs.name + "_cast",
       {n->inputs[0]}, {{"dtype", "int32"}});
     NodeEntry rhs = MakeNode("cast", n->inputs[1].node->attrs.name + "_cast",
       {n->inputs[1]}, {{"dtype", "int32"}});
-    NodeEntry qnode = MakeNode(op_name, "quantized_" + n->attrs.name, {lhs, rhs});
-    NodeEntry shift = MakeNode("right_shift", "quantized_" + n->attrs.name + "_shift",
+    NodeEntry qnode = MakeNode(op_name, node_name + "_quantized",
+      {lhs, rhs});
+    NodeEntry shift = MakeNode("noise_shift", node_name + "_rshift",
       {qnode}, {{"bit", dict.at("shift")}});
-    NodeEntry clip = MakeNode("clip", "quantized_" + n->attrs.name + "_clip",
+    NodeEntry clip = MakeNode("clip", "quantized_" + node_name + "_clip",
       {shift}, {{"a_min", "-127"}, {"a_max", "127"}});
-    NodeEntry cast = MakeNode("cast", "quantized_" + n->attrs.name + "_cast",
+    NodeEntry cast = MakeNode("cast", "quantized_" + node_name + "_cast",
       {clip}, {{"dtype", "int8"}});
     return cast.node;
   };
+}
+
+
+inline void ExpandCalibrate(uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
+                            const std::vector<int>& base2_range,
+                            std::unordered_map<std::string, std::string>* dict) {
+  // relu, global_avg_pool
+  const auto& inputs = idx[nid].inputs;
+  int k_i = base2_range[inputs[0].node_id];
+  int k_o = base2_range[nid];
+  int shift = (k_i - k_o);  // lshift
+  CHECK_GE(shift, 0);
+  (*dict)["shift"] = std::to_string(shift);
+}
+
+
+inline void AdditionCalibrate(uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
+                              const std::vector<int>& base2_range,
+                              std::unordered_map<std::string, std::string>* dict) {
+  // elemwise_add, broadcast_add
+  const auto& inputs = idx[nid].inputs;
+  int ka = base2_range[inputs[0].node_id];
+  int kb = base2_range[inputs[1].node_id];
+  int kc = base2_range[nid];
+
+  int kmin = std::min(ka, kb);
+  int kmax = std::max(ka, std::max(kb, kc));
+  int kbase = std::max(kmax - 7, kmin);
+
+  int sa = std::max(ka - kbase, -7);
+  int sb = std::max(kb - kbase, -7);
+  int sc = kc - kbase;
+
+  (*dict)["shift_a"] = std::to_string(sa);  // lshift
+  (*dict)["shift_b"] = std::to_string(sb);  // lshift
+  (*dict)["shift_c"] = std::to_string(sc);  // rshift
+  (*dict)["out_type"] = "int8";
+}
+
+
+inline void MultiplicationCalibrate(uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
+                                    const std::vector<int>& base2_range,
+                                    std::unordered_map<std::string, std::string>* dict) {
+  // elemwise_mul, broadcast_mul, dense, conv2d
+  const auto& inputs = idx[nid].inputs;
+  int ka = base2_range[inputs[0].node_id];
+  int kb = base2_range[inputs[1].node_id];
+  int kc = base2_range[nid];
+  int shift = kc + 7 - (ka + kb);
+  CHECK_GT(shift, 0);
+  CHECK_LT(shift, 15);
+  (*dict)["shift"] = std::to_string(shift);
+  (*dict)["out_type"] = "int8";
 }
 
 
@@ -139,202 +237,74 @@ NNVM_REGISTER_OP(dequantize)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<QuantizeParam>);
 
 
-// quantized elemwise_add
+// noise_shift
+
+struct NoiseShiftParam : public dmlc::Parameter<NoiseShiftParam> {
+  int bit;
+  DMLC_DECLARE_PARAMETER(NoiseShiftParam) {
+    DMLC_DECLARE_FIELD(bit);
+  };
+};
+
+DMLC_REGISTER_PARAMETER(NoiseShiftParam);
+
+NNVM_REGISTER_ELEMWISE_UNARY_OP(noise_shift)
+.add_arguments(NoiseShiftParam::__FIELDS__())
+.set_attr_parser(ParamParser<NoiseShiftParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<NoiseShiftParam>);
+
 
 // quantized elemwise_add
 
 NNVM_REGISTER_OP(elemwise_add)
-.set_attr<FQuantizedOp>("FQuantizedOp",
-  [](const NodePtr& n,
-     const std::unordered_map<std::string, std::string>& dict) {
-    std::string lname = n->inputs[0].node->attrs.name;
-    std::string rname = n->inputs[1].node->attrs.name;
-    NodeEntry lhs = MakeNode("cast", lname + "_cast",
-      {n->inputs[0]}, {{"dtype", "int32"}});
-    NodeEntry rhs = MakeNode("cast", rname + "_cast",
-      {n->inputs[1]}, {{"dtype", "int32"}});
-    NodeEntry lshift = MakeNode("left_shift", lname + "_shift",
-      {lhs}, {{"bit", dict.at("shift_a")}});
-    NodeEntry rshift = MakeNode("left_shift", rname + "_shift",
-      {rhs}, {{"bit", dict.at("shift_b")}});
-    NodeEntry qnode = MakeNode("elemwise_add", "quantized_" + n->attrs.name, {lshift, rshift});
-    NodeEntry shift = MakeNode("right_shift", "quantized_" + n->attrs.name + "_shift",
-      {qnode}, {{"bit", dict.at("shift_c")}});
-    NodeEntry clip = MakeNode("clip", "quantized_" + n->attrs.name + "_clip",
-      {shift}, {{"a_min", "-127"}, {"a_max", "127"}});
-    NodeEntry cast = MakeNode("cast", "quantized_" + n->attrs.name + "_cast",
-      {clip}, {{"dtype", "int8"}});
-    return cast.node;
-  })
-.set_attr<FCalibrate>("FCalibrate",
-  [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-     const std::vector<int>& base2_range,
-     std::unordered_map<std::string, std::string>* dict) {
-     const auto& inputs = idx[nid].inputs;
-     int ka = base2_range[inputs[0].node_id];
-     int kb = base2_range[inputs[1].node_id];
-     int kc = base2_range[nid];
-     int kmin = std::min(ka, kb);
-     (*dict)["shift_a"] = std::to_string(ka - kmin);
-     (*dict)["shift_b"] = std::to_string(kb - kmin);
-     (*dict)["shift_c"] = std::to_string(kc - kmin);
-  });
-
-
-NNVM_REGISTER_OP(elemwise_mul)
-.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOpCastBinaryInput("elemwise_mul"))
-.set_attr<FCalibrate>("FCalibrate",
-  [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-     const std::vector<int>& base2_range,
-     std::unordered_map<std::string, std::string>* dict) {
-     const auto& inputs = idx[nid].inputs;
-     int ka = base2_range[inputs[0].node_id];
-     int kb = base2_range[inputs[1].node_id];
-     int kc = base2_range[nid];
-     int shift = kc + 7 - (ka + kb);
-     (*dict)["shift"] = std::to_string(shift);
-
-     // s_a, s_b
-     // qc = f(qa, qb) => int8
-     // f(ra, rb) ~ 2^kc
-     // f(qa * 2^(ka - 7), qb * 2^(kb - 7)) ~ 2^kc
-     // f(qa, qb) ~ 2^(kc + 14 - (ka + kb)) // control between 2^15
-
-     // qc = f(qa / 2^sa, qb / 2^sb)
-     // qc ~ 2^(kc + 14 - (ka + kb) - (sa + sb))
-     // 2^(kc + 14 - (ka + kb) - (sa + sb)) <= 2^(acc_bits)
-     // sa + sb >= kc + 14 - acc_bits - (ka + kb)
-     // sa + sb >= kc + 7 - (ka + kb)
-     // (5, -1, 4)
-     // sa, sb >= 0
-
-     /*
-     int acc_bits = 7;
-     LOG(INFO) << "[" << n->attrs.name << ", "
-        << n->op()->name << "] (k_a=" << k_a << ", k_b=" << k_b << ", k_c=" << k_c << ")";
-     int shift_a = 0;
-     int shift_b = 0;
-     int diff = (k_c + 14 - acc_bits) - (k_a + k_b);
-     if (diff > 0) {
-        shift_a += diff / 2;
-        shift_b += diff - (diff / 2);
-     }
-
-     (*dict)["shift_a"] = std::to_string(shift_a);
-     (*dict)["shift_b"] = std::to_string(shift_b);
-     */
-  });
+.set_attr<FQuantizedOp>("FQuantizedOp", AdditionQuantizedOp("elemwise_add"))
+.set_attr<FCalibrate>("FCalibrate", AdditionCalibrate);
 
 
 // quantized broadcast_add
 
 NNVM_REGISTER_OP(broadcast_add)
-// .set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOpShiftBinaryInput("broadcast_add"))
-.set_attr<FQuantizedOp>("FQuantizedOp",
-  [](const NodePtr& n,
-     const std::unordered_map<std::string, std::string>& dict) {
-    std::string lname = n->inputs[0].node->attrs.name;
-    std::string rname = n->inputs[1].node->attrs.name;
-    NodeEntry lhs = MakeNode("cast", lname + "_cast",
-      {n->inputs[0]}, {{"dtype", "int32"}});
-    NodeEntry rhs = MakeNode("cast", rname + "_cast",
-      {n->inputs[1]}, {{"dtype", "int32"}});
-    NodeEntry lshift = MakeNode("left_shift", lname + "_shift",
-      {lhs}, {{"bit", dict.at("shift_a")}});
-    NodeEntry rshift = MakeNode("left_shift", rname + "_shift",
-      {rhs}, {{"bit", dict.at("shift_b")}});
-    NodeEntry qnode = MakeNode("broadcast_add", "quantized_" + n->attrs.name, {lshift, rshift});
-    NodeEntry shift = MakeNode("right_shift", "quantized_" + n->attrs.name + "_shift",
-      {qnode}, {{"bit", dict.at("shift_c")}});
-    NodeEntry clip = MakeNode("clip", "quantized_" + n->attrs.name + "_clip",
-      {shift}, {{"a_min", "-127"}, {"a_max", "127"}});
-    NodeEntry cast = MakeNode("cast", "quantized_" + n->attrs.name + "_cast",
-      {clip}, {{"dtype", "int8"}});
-    return cast.node;
-  })
-.set_attr<FCalibrate>("FCalibrate",
-  [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-     const std::vector<int>& base2_range,
-     std::unordered_map<std::string, std::string>* dict) {
-     const auto& inputs = idx[nid].inputs;
-     int ka = base2_range[inputs[0].node_id];
-     int kb = base2_range[inputs[1].node_id];
-     int kc = base2_range[nid];
-     int kmin = std::min(ka, kb);
-     (*dict)["shift_a"] = std::to_string(ka - kmin);
-     (*dict)["shift_b"] = std::to_string(kb - kmin);
-     (*dict)["shift_c"] = std::to_string(kc - kmin);
-  });
+.set_attr<FQuantizedOp>("FQuantizedOp", AdditionQuantizedOp("broadcast_add"))
+.set_attr<FCalibrate>("FCalibrate", AdditionCalibrate);
 
 
-//.set_attr<FCalibrate>("FCalibrate",
-//  [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-//     const std::vector<int>& base2_range,
-//     std::unordered_map<std::string, std::string>* dict) {
-//     const auto& inputs = idx[nid].inputs;
-//     int k_a = base2_range[inputs[0].node_id];
-//     int k_b = base2_range[inputs[1].node_id];
-//     int k_c = base2_range[nid];
-//     LOG(INFO) << "[" << n->attrs.name << ", "
-//        << n->op()->name << "] (k_a=" << k_a << ", k_b=" << k_b << ", k_c=" << k_c << ")";
-//     // (*dict)["shift_a"] = std::to_string(k_a - k_c);
-//     // (*dict)["shift_b"] = std::to_string(k_b - k_c);
-//     int k_max = std::max(std::max(k_a, k_b), k_c);
-//     (*dict)["shift_a"] = std::to_string(std::min((k_max - k_a), 7));
-//     (*dict)["shift_b"] = std::to_string(std::min((k_max - k_b), 7));
-//  });
+// quantized elemwise_mul
+
+NNVM_REGISTER_OP(elemwise_mul)
+.set_attr<FQuantizedOp>("FQuantizedOp", MultiplicationQuantizedOp("elemwise_mul"))
+.set_attr<FCalibrate>("FCalibrate", MultiplicationCalibrate);
 
 
 // quantized broadcast_mul
 
 NNVM_REGISTER_OP(broadcast_mul)
-.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOpCastBinaryInput("broadcast_mul"))
-.set_attr<FCalibrate>("FCalibrate",
-  [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-     const std::vector<int>& base2_range,
-     std::unordered_map<std::string, std::string>* dict) {
-     const auto& inputs = idx[nid].inputs;
-     int ka = base2_range[inputs[0].node_id];
-     int kb = base2_range[inputs[1].node_id];
-     int kc = base2_range[nid];
-
-     int shift = kc + 7 - (ka + kb);
-     (*dict)["shift"] = std::to_string(shift);
-
-     /*
-     int acc_bits = 7;
-     LOG(INFO) << "[" << n->attrs.name << ", "
-        << n->op()->name << "] (k_a=" << k_a << ", k_b=" << k_b << ", k_c=" << k_c << ")";
-     int shift_a = 0;
-     int shift_b = 0;
-     int diff = (k_c + 14 - acc_bits) - (k_a + k_b);
-     if (diff > 0) {
-        shift_a += diff / 2;
-        shift_b += diff - (diff / 2);
-     }
-
-     (*dict)["shift_a"] = std::to_string(shift_a);
-     (*dict)["shift_b"] = std::to_string(shift_b);
-     */
-  });
+.set_attr<FQuantizedOp>("FQuantizedOp", MultiplicationQuantizedOp("broadcast_mul"))
+.set_attr<FCalibrate>("FCalibrate", MultiplicationCalibrate);
 
 
 // quantized identity
 
 NNVM_REGISTER_OP(identity)
-.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("identity"));
+.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("identity"));
 
 
 // quantized reshape
 
 NNVM_REGISTER_OP(reshape)
-.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("reshape"));
+.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("reshape"));
+
+
+// quantized flatten
+
+NNVM_REGISTER_OP(flatten)
+.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("flatten"));
 
 
 // quantized relu
 
 NNVM_REGISTER_OP(relu)
-.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("relu"));
+.set_attr<FQuantizedOp>("FQuantizedOp", ExpandQuantizedOp("relu"))
+.set_attr<FCalibrate>("FCalibrate", ExpandCalibrate);
 
 
 // quantized dense
@@ -342,8 +312,7 @@ NNVM_REGISTER_OP(relu)
 struct QuantizedDenseParam : public dmlc::Parameter<QuantizedDenseParam> {
   int units;
   bool use_bias;
-  int shift_out;
-  int shift_bias;
+  int shift;
   int out_type;
 
   DMLC_DECLARE_PARAMETER(QuantizedDenseParam) {
@@ -351,9 +320,7 @@ struct QuantizedDenseParam : public dmlc::Parameter<QuantizedDenseParam> {
     .describe("Number of hidden units of the dense transformation.");
     DMLC_DECLARE_FIELD(use_bias).set_default(true)
     .describe("Whether to use bias parameter");
-    DMLC_DECLARE_FIELD(shift_out)
-    .set_default(0);
-    DMLC_DECLARE_FIELD(shift_bias)
+    DMLC_DECLARE_FIELD(shift)
     .set_default(0);
     DMLC_DECLARE_FIELD(out_type)
     .set_default(kInt32)
@@ -401,18 +368,6 @@ inline bool QuantizedDenseShape(const nnvm::NodeAttrs& attrs,
 }
 
 NNVM_REGISTER_OP(quantized_dense)
-.describe(R"code(Applies a linear transformation: :math:`Y = XW^T + b`.
-
-- **data**: `(x1, x2, ..., xn, input_dim)`
-- **weight**: `(units, input_dim)`
-- **bias**: `(units,)`
-- **out**: `(x1, x2, ..., xn, num_hidden)`
-
-The learnable parameters include both ``weight`` and ``bias``.
-
-If ``use_bias`` is set to be false, then the ``bias`` term is ignored.
-
-)code" NNVM_ADD_FILELINE)
 .add_argument("data", "nD Tensor", "Input data.")
 .add_argument("weight", "2D Tensor", "Weight matrix.")
 .add_argument("bias", "1D Tensor", "Bias parameter.")
@@ -427,44 +382,19 @@ If ``use_bias`` is set to be false, then the ``bias`` term is ignored.
 .set_support_level(1);
 
 NNVM_REGISTER_OP(dense)
-.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("quantized_dense"))
-.set_attr<FCalibrate>("FCalibrate",
-  [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-     const std::vector<int>& base2_range,
-     std::unordered_map<std::string, std::string>* dict) {
-     const DenseParam& param = nnvm::get<DenseParam>(n->attrs.parsed);
-     const auto& inputs = idx[nid].inputs;
-     if (param.use_bias) {
-       int ka = base2_range[inputs[0].node_id];
-       int kb = base2_range[inputs[1].node_id];
-       int kc = base2_range[inputs[2].node_id];
-       int ko = base2_range[nid];
-       std::vector<int> kvec({ka, kb, kc, ko});
-
-       // f(qa, qb) ~ 2^(kc + 14 - (ka + kb)) // control between 2^15
-       // qc_ * 2^kc / 2^(kc + 14 - (ka + kb)) = qc / 2^7 * 2^kc
-       // qc_ = qc * 2^(kc + 7 - (ka + kb))
-       int shift_bias = (kc - (ka + kb) + 7);
-       (*dict)["shift_bias"] = std::to_string(shift_bias);
-
-       int shift_out = (ko - (ka + kb) + 7);
-       (*dict)["shift_out"] = std::to_string(shift_out);
-       (*dict)["out_type"] = "int8";
-
-       LOG(INFO) << "[" << n->attrs.name << ", " << n->op()->name << "] "
-         << "(ka=" << ka << ", kb=" << kb << ", kc=" << kc << ", ko=" << ko << ")";
-       LOG(INFO) << "[" << n->attrs.name << ", " << n->op()->name << "] "
-         << "(shift_bias=" << shift_bias << ", shift_out=" << shift_out << shift_out << ")";
-
-     } else {
-       int ka = base2_range[inputs[0].node_id];
-       int kb = base2_range[inputs[1].node_id];
-       int ko = base2_range[nid];
-       int shift = (ko - (ka + kb) + 7);
-       (*dict)["shift_out"] = std::to_string(shift);
-       (*dict)["out_type"] = "int8";
-     }
-  });
+.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("quantized_dense"))
+.set_attr<FCalibrate>("FCalibrate", MultiplicationCalibrate)
+.set_attr<FSeparateBias>("FSeparateBias", [] (const NodePtr& n) {
+  const DenseParam& param = nnvm::get<DenseParam>(n->attrs.parsed);
+  if (param.use_bias == false) return std::vector<NodeEntry>({NodeEntry{n, 0, 0}});
+  std::unordered_map<std::string, std::string> dict = n->attrs.dict;
+  dict["use_bias"] = "False";
+  NodeEntry node = MakeNode(n->op()->name.c_str(), n->attrs.name,
+    {n->inputs[0], n->inputs[1]}, dict);
+  NodeEntry node_with_bias = MakeNode("broadcast_add", n->attrs.name + "_add_bias",
+    {node, n->inputs[2]});
+  return std::vector<NodeEntry>({node_with_bias});
+});
 
 
 // quantized conv2d
@@ -618,21 +548,6 @@ inline bool QuantizedConv2DType(const nnvm::NodeAttrs& attrs,
 }
 
 NNVM_REGISTER_OP(quantized_conv2d)
-.describe(R"code(2D convolution layer (e.g. spatial convolution over images).
-
-This layer creates a convolution kernel that is convolved
-with the layer input to produce a tensor of
-outputs. If `use_bias` is True,
-a bias vector is created and added to the outputs.
-
-- **data**: This depends on the `layout` parameter. Input is 4D array of shape
-            (batch_size, in_channels, height, width) if `layout` is `NCHW`.
-- **weight**: (channels, in_channels, kernel_size[0], kernel_size[1])
-- **bias**: (channels,)
-- **out**:  This depends on the `layout` parameter. Output is 4D array of shape
-            (batch_size, channels, out_height, out_width) if `layout` is `NCHW`.
-
-)code" NNVM_ADD_FILELINE)
 .add_argument("data", "4D Tensor", "Input data.")
 .add_argument("weight", "4D Tensor", "Weight matrix.")
 .add_argument("bias", "1D Tensor", "Bias parameter.")
@@ -647,57 +562,36 @@ a bias vector is created and added to the outputs.
 .set_support_level(2);
 
 NNVM_REGISTER_OP(conv2d)
-.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("quantized_conv2d"))
-.set_attr<FCalibrate>("FCalibrate",
-  [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-     const std::vector<int>& base2_range,
-     std::unordered_map<std::string, std::string>* dict) {
-     const auto& inputs = idx[nid].inputs;
-     int k_a = base2_range[inputs[0].node_id];
-     int k_b = base2_range[inputs[1].node_id];
-     int k_c = base2_range[nid];
-     int shift = (k_c - (k_a + k_b) + 7);
-     (*dict)["shift"] = std::to_string(shift);
-     (*dict)["out_type"] = "int8";
-  });
+.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("quantized_conv2d"))
+.set_attr<FCalibrate>("FCalibrate", MultiplicationCalibrate)
+.set_attr<FSeparateBias>("FSeparateBias", [] (const NodePtr& n) {
+  const Conv2DParam& param = nnvm::get<Conv2DParam>(n->attrs.parsed);
+  if (param.use_bias == false) return std::vector<NodeEntry>({NodeEntry{n, 0, 0}});
+  std::unordered_map<std::string, std::string> dict = n->attrs.dict;
+  dict["use_bias"] = "False";
+  NodeEntry node = MakeNode(n->op()->name.c_str(), n->attrs.name,
+    {n->inputs[0], n->inputs[1]}, dict);
+  NodeEntry bias = n->inputs[2];
+  NodeEntry expand = MakeNode("expand_dims", bias.node->attrs.name + "_expand",
+    {bias}, {{"axis", "1"}, {"num_newaxis", "2"}});
+  NodeEntry node_with_bias = MakeNode("broadcast_add", n->attrs.name + "_add_bias",
+    {node, expand});
+  return std::vector<NodeEntry>({node_with_bias});
+});
+
 
 
 // quantized max_pool2d
 
 NNVM_REGISTER_OP(max_pool2d)
-.set_attr<FQuantizedOp>("FQuantizedOp", MakeFQuantizedOp("max_pool2d"));
+.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("max_pool2d"));
 
 
 // quantized global_avg_pool2d
 
 NNVM_REGISTER_OP(global_avg_pool2d)
-.set_attr<FQuantizedOp>("FQuantizedOp",
-  [] (const NodePtr& n,
-      const std::unordered_map<std::string, std::string>& dict) {
-    std::string node_name = "quantized_" + n->attrs.name;
-    NodeEntry casti16 = MakeNode("cast", node_name + "_cast_i16",
-      {n->inputs[0]}, {{"dtype", "int16"}});
-    NodeEntry qnode = MakeNode("global_avg_pool2d", node_name,
-      {casti16}, n->attrs.dict);
-    LOG(INFO) << "shift: " << dict.at("shift");
-    NodeEntry shift = MakeNode("left_shift", node_name + "_shift", {qnode},
-      {{"bit", dict.at("shift")}});
-    NodeEntry clip = MakeNode("clip", node_name + "_clip",
-      {shift}, {{"a_min", "-127"}, {"a_max", "127"}});
-    NodeEntry casti8 = MakeNode("cast", node_name + "_cast_i8",
-      {clip}, {{"dtype", "int8"}});
-    return casti8.node;
-  })
-.set_attr<FCalibrate>("FCalibrate",
-  [](uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-     const std::vector<int>& base2_range,
-     std::unordered_map<std::string, std::string>* dict) {
-     const auto& inputs = idx[nid].inputs;
-     int k_i = base2_range[inputs[0].node_id];
-     int k_o = base2_range[nid];
-     int shift = (k_i - k_o);
-     (*dict)["shift"] = std::to_string(shift);
-  });
+.set_attr<FQuantizedOp>("FQuantizedOp", ExpandQuantizedOp("global_avg_pool2d"))
+.set_attr<FCalibrate>("FCalibrate", ExpandCalibrate);
 
 }  // namespace top
 }  // namespace nnvm
