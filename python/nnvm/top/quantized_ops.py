@@ -7,15 +7,22 @@ import topi
 from . import registry as reg
 from .registry import OpPattern
 
+def noise_shift(data, bit):
+    bias = tvm.const(pow(2, max(bit - 1, 0)), data.dtype)
+    return tvm.compute(data.shape, lambda *i: tvm.select(data(*i) < 0,
+        - ((-data(*i) + bias) >> bit), (data(*i) + bias) >> bit))
+
 @reg.register_compute("quantize")
 def compute_quantize(attrs, inputs, _):
     k = attrs.get_int('k')
     out_dtype = attrs['out_type']
     assert out_dtype == 'int8'
     data = inputs[0]
-    scale = float(pow(2, 7) - 1) / pow(2, k)
-    mul = tvm.compute(data.shape, lambda *i: data(*i) * scale)
-    cast = tvm.compute(data.shape, lambda *i: tvm.select(mul(*i) < 0, (mul(*i) - 0.5).astype(out_dtype), (mul(*i) + 0.5).astype(out_dtype)))
+    scale = float(pow(2, 7) - 0.5) / pow(2, k)
+    scaled_data = tvm.compute(data.shape, lambda *i: data(*i) * scale)
+    cliped_data = topi.clip(scaled_data, -127, 127)
+    cast = tvm.compute(cliped_data.shape, lambda *i: tvm.select(cliped_data(*i) < 0,
+        (cliped_data(*i) - 0.5).astype(out_dtype), (cliped_data(*i) + 0.5).astype(out_dtype)))
     return cast
 
 
@@ -30,38 +37,50 @@ def compute_dequantize(attrs, inputs, _):
     out_dtype = attrs['out_type']
     assert out_dtype == 'int8'
     data = inputs[0]
-    scale = pow(2, k) / float(pow(2, 7) - 1)
-    mul = tvm.compute(data.shape, lambda *i: data(*i) * scale)
-    return mul
-
+    scale = pow(2, k) / float(pow(2, 7) - 0.5)
+    scaled_data = tvm.compute(data.shape, lambda *i: (data(*i)) * scale)
+    return scaled_data
 
 @reg.register_schedule("dequantize")
 def schedule_dequantize(_, outs, target):
     return tvm.create_schedule([x.op for x in outs])
 
+
+@reg.register_compute("noise_shift")
+def compute_noise_shift(attrs, inputs, _):
+    bit = attrs.get_int('bit')
+    data = inputs[0]
+    dtype = data.dtype
+    assert bit >= 0
+    if bit == 0:
+        return tvm.compute(data.shape, lambda *i: data(*i))
+    return noise_shift(data, bit)
+
+@reg.register_schedule("noise_shift")
+def schedule_noise_shift(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
+
+
 @reg.register_compute("quantized_dense")
 def compute_quantized_dense(attrs, inputs, _):
-    shift_out = attrs.get_int('shift_out')
+    shift = attrs.get_int('shift')
     out_dtype = attrs['out_type']
     cmp_dtype = 'int32' # compute data type
+    assert attrs.get_bool("use_bias") == False
+
     data   = inputs[0]
     weight = inputs[1]
     m, l = data.shape
     n, _ = weight.shape
 
     k = tvm.reduce_axis((0, l), name='k')
-    out_i16 = tvm.compute((m, n),
+    out = tvm.compute((m, n),
         lambda i, j: tvm.sum(data[i][k].astype(cmp_dtype) * weight[j][k].astype(cmp_dtype), axis=k))
 
-    if attrs.get_bool("use_bias"):
-        bias = inputs[2]
-        shift_bias = attrs.get_int("shift_bias")
-        bias_i16 = topi.right_shift(topi.cast(bias, cmp_dtype), shift_bias)
-        out_i16 = topi.broadcast_add(out_i16, bias_i16)
-
     if out_dtype == 'int8':
-        out_i16 = topi.right_shift(out_i16, shift_out)
-        return topi.cast(topi.clip(out_i16, -127, 127), out_dtype)
+        assert shift >= 1
+        shift_out = noise_shift(out, shift)
+        return topi.cast(topi.clip(shift_out, -127, 127), out_dtype)
     else:
         return out_i16
 
@@ -85,6 +104,7 @@ def compute_quantized_conv2d(attrs, inputs, _):
     assert layout == "NCHW", "only support nchw for now"
     assert dilation == (1, 1), "not support dilate now"
     assert groups == 1, "only support group==1 conv2d"
+    assert attrs.get_bool("use_bias") == False
 
     data = inputs[0]
     kernel = inputs[1]
@@ -101,14 +121,16 @@ def compute_quantized_conv2d(attrs, inputs, _):
     rh = tvm.reduce_axis((0, HK), name='rh')
     rw = tvm.reduce_axis((0, WK), name='rw')
 
-    out_i16 = tvm.compute((N, CO, HO, WO), lambda n, c, h, w:
+    out = tvm.compute((N, CO, HO, WO), lambda n, c, h, w:
         tvm.sum(data_pad[n, rc, h*strides[0] + rh, w*strides[1] + rw].astype(cmp_dtype) *
                 kernel[c, rc, rh, rw].astype(cmp_dtype), axis=[rc, rh, rw]))
 
     if out_dtype == 'int8':
-        return topi.cast(topi.clip(topi.right_shift(out_i16, shift), -127, 127), out_dtype)
+        assert shift >= 1
+        shift_out = noise_shift(out, shift)
+        return topi.cast(topi.clip(shift_out, -127, 127), out_dtype)
     else:
-        return out_i16
+        return out
 
 @reg.register_schedule("quantized_conv2d")
 def schedule_quantized_conv2d(_, outs, target):

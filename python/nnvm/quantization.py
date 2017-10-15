@@ -63,6 +63,7 @@ def _shape_dtype_dict(inputs, params=None):
 
 def collect_statistics(graph, dataset, params={}):
     ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
+    graph = graph.apply('SeparateBias')
     graph = _compiler.optimize(graph, ishapes, idtypes)
     graph, params = precompute_prune(graph, params)
     ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
