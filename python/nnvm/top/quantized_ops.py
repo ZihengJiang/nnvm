@@ -99,7 +99,7 @@ def compute_quantized_conv2d(attrs, inputs, _):
     layout = attrs["layout"]
     shift = attrs.get_int('shift')
     out_dtype = attrs['out_type']
-    cmp_dtype = 'int32' # compute data type
+    cmp_dtype = 'int16' # compute data type
 
     assert layout == "NCHW", "only support nchw for now"
     assert dilation == (1, 1), "not support dilate now"
