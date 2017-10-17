@@ -36,68 +36,59 @@ def _compute_binary(f):
         return f(x[0], x[1])
     return _compute
 
+_fschedule_injective = tvm.convert(_schedule_injective)
+_fschedule_broadcast = _fschedule_injective
+_fschedule_elemwise = _fschedule_injective
 
+
+# lshift
 @reg.register_compute("left_shift")
 def compute_lshift(attrs, inputs, _):
     data = inputs[0]
     bit = attrs.get_int("bit")
-    out = tvm.compute(data.shape, lambda *i: data(*i) << bit, tag="left_shift")
-    return out
+    return topi.left_shift(data, bit)
+reg.register_pattern("left_shift", OpPattern.ELEMWISE)
+reg.register_schedule("left_shift", _fschedule_broadcast)
 
-@reg.register_schedule("left_shift")
-def schedule_lshift(_, outs, target):
-    return tvm.create_schedule([x.op for x in outs])
-
-
+# rshift
 @reg.register_compute("right_shift")
 def compute_rshift(attrs, inputs, _):
     data = inputs[0]
     bit = attrs.get_int("bit")
-    out = tvm.compute(data.shape, lambda *i: data(*i) >> bit, tag="right_shift")
-    return out
+    return topi.rightt_shift(data, bit)
+reg.register_pattern("right_shift", OpPattern.ELEMWISE)
+reg.register_schedule("right_shift", _fschedule_broadcast)
 
-@reg.register_schedule("right_shift")
-def schedule_rshift(_, outs, target):
-    return tvm.create_schedule([x.op for x in outs])
-
-
-@reg.register_compute("clip")
-def compute_clip(attrs, inputs, _):
+# noise shift
+@reg.register_compute("noise_shift")
+def compute_noise_shift(attrs, inputs, _):
+    bit = attrs.get_int('bit')
     data = inputs[0]
-    a_min = attrs.get_float("a_min")
-    a_min = tvm.const(a_min, dtype=data.dtype)
-    a_max = attrs.get_float("a_max")
-    a_max = tvm.const(a_max, dtype=data.dtype)
-    return tvm.compute(data.shape, lambda *i: tvm.max(tvm.min(data(*i), a_max), a_min), tag='clip')
+    assert bit > 0
+    return topi.noise_rshift(data, bit)
+reg.register_pattern("noise_shift", OpPattern.ELEMWISE)
+reg.register_schedule("noise_shift", _fschedule_broadcast)
 
-@reg.register_schedule("clip")
-def schedule_clip(_, outs, target):
-    return tvm.create_schedule([x.op for x in outs])
+# identity
+reg.register_compute("identity", _compute_unary(topi.identity))
+reg.register_pattern("identity", OpPattern.ELEMWISE)
+reg.register_schedule("identity", _fschedule_broadcast)
 
-
-@reg.register_compute("identity")
-def compute_identity(attrs, inputs, _):
-    data = inputs[0]
-    return tvm.compute(data.shape, lambda *i: data(*i))
-
-@reg.register_schedule("identity")
-def schedule_identity(_, outs, target):
-    return tvm.create_schedule([x.op for x in outs])
-
-
+# cast
 @reg.register_compute("cast")
 def compute_cast(attrs, inputs, _):
-    data = inputs[0]
-    return tvm.compute(data.shape, lambda *i: data(*i).astype(attrs['dtype']), tag='cast')
+    return topi.cast(inputs[0], attrs['dtype'])
+reg.register_pattern("cast", OpPattern.ELEMWISE)
+reg.register_schedule("cast", _fschedule_broadcast)
 
-@reg.register_schedule("cast")
-def schedule_cast(_, outs, target):
-    return tvm.create_schedule([x.op for x in outs])
-
-
-_fschedule_injective = tvm.convert(_schedule_injective)
-_fschedule_broadcast = _fschedule_injective
-_fschedule_elemwise = _fschedule_injective
+# clip
+@reg.register_compute("clip")
+def compute_clip(attrs, inputs, _):
+    a_min = attrs.get_float("a_min")
+    a_max = attrs.get_float("a_max")
+    return topi.clip(inputs[0], a_min, a_max)
+reg.register_pattern("clip", OpPattern.ELEMWISE)
+reg.register_schedule("clip", _fschedule_broadcast)
 
 # copy
 reg.register_compute("copy", _compute_unary(topi.identity))
