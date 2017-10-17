@@ -21,17 +21,15 @@ namespace {
 using compiler::FQuantizedOp;
 using compiler::FCalibrate;
 
-static constexpr float eps = 1e-04;
-
 inline NodeEntry MakeQuantizeNode(NodeEntry e, int k) {
   NodeEntry quantize = MakeNode("quantize",
-    "quantize_" + e.node->attrs.name, {e}, {{"k", std::to_string(k)}});
+    e.node->attrs.name + "_quantized", {e}, {{"k", std::to_string(k)}});
   return quantize;
 }
 
 inline NodeEntry MakeDequantizeNode(NodeEntry e, int k) {
   NodeEntry dequantize = MakeNode("dequantize",
-    "dequantize_" + e.node->attrs.name, {e}, {{"k", std::to_string(k)}});
+    e.node->attrs.name + "_dequantized", {e}, {{"k", std::to_string(k)}});
   return dequantize;
 }
 

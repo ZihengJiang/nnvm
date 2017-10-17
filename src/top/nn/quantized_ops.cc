@@ -152,6 +152,7 @@ inline void AdditionCalibrate(uint32_t nid, const nnvm::NodePtr& n, const Indexe
                               const std::vector<int>& base2_range,
                               std::unordered_map<std::string, std::string>* dict) {
   // elemwise_add, broadcast_add
+  // TODO abs(max, min) >= 7
   const auto& inputs = idx[nid].inputs;
   int ka = base2_range[inputs[0].node_id];
   int kb = base2_range[inputs[1].node_id];
@@ -569,19 +570,15 @@ NNVM_REGISTER_OP(conv2d)
   std::string rname = n->inputs[1].node->attrs.name;
   int shift_a = std::stoi(dict.at("shift_a"));
   int shift_b = std::stoi(dict.at("shift_b"));
-  NodeEntry lhs = MakeNode("cast", lname + "_cast",
-    {n->inputs[0]}, {{"dtype", "int16"}});
-  NodeEntry rhs = MakeNode("cast", rname + "_cast",
-    {n->inputs[1]}, {{"dtype", "int16"}});
-  NodeEntry lhs_shift = lhs;
+  NodeEntry lhs_shift = n->inputs[0];
   if (shift_a != 0) {
     lhs_shift = MakeNode("noise_shift", lname + "_rshift",
-      {lhs}, {{"bit", dict.at("shift_a")}});
+      {lhs_shift}, {{"bit", dict.at("shift_a")}});
   }
-  NodeEntry rhs_shift = rhs;
+  NodeEntry rhs_shift = n->inputs[1];
   if (shift_b != 0) {
     rhs_shift = MakeNode("noise_shift", rname + "_rshift",
-      {rhs}, {{"bit", dict.at("shift_b")}});
+      {rhs_shift}, {{"bit", dict.at("shift_b")}});
   }
 
   std::unordered_map<std::string, std::string> ndict = n->attrs.dict;
