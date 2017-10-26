@@ -55,19 +55,10 @@ reg.register_schedule("left_shift", _fschedule_broadcast)
 def compute_rshift(attrs, inputs, _):
     data = inputs[0]
     bit = attrs.get_int("bit")
-    return topi.rightt_shift(data, bit)
+    return topi.right_shift(data, bit)
 reg.register_pattern("right_shift", OpPattern.ELEMWISE)
 reg.register_schedule("right_shift", _fschedule_broadcast)
 
-# noise shift
-@reg.register_compute("noise_shift")
-def compute_noise_shift(attrs, inputs, _):
-    bit = attrs.get_int('bit')
-    data = inputs[0]
-    assert bit > 0
-    return topi.noise_rshift(data, bit)
-reg.register_pattern("noise_shift", OpPattern.ELEMWISE)
-reg.register_schedule("noise_shift", _fschedule_broadcast)
 
 # identity
 reg.register_compute("identity", _compute_unary(topi.identity))
