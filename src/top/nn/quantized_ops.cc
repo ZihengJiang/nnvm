@@ -52,18 +52,17 @@ inline FQuantizedOp ExpandQuantizedOp(const char* op_name) {
   return [=] (const NodePtr& n,
               const std::unordered_map<std::string, std::string>& dict) {
     std::string node_name = n->attrs.name;
-    int bit = std::stoi(dict.at("shift"));
-    if (bit == 0) {
-      return MakeNode(op_name, node_name + "_quantized",
-        {n->inputs[0]}, n->attrs.dict).node;
-    }
-    CHECK_GT(bit, 0);
-    NodeEntry casti16 = MakeNode("cast", n->inputs[0].node->attrs.name + "_cast",
-      {n->inputs[0]}, {{"dtype", "int16"}});
+    NodeEntry casti32 = MakeNode("cast", n->inputs[0].node->attrs.name + "_cast",
+      {n->inputs[0]}, {{"dtype", "int32"}});
     NodeEntry qnode = MakeNode(op_name, node_name + "_quantized",
-      {casti16}, n->attrs.dict);
-    NodeEntry shift = MakeNode("left_shift", node_name + "_lshift",
-      {qnode}, {{"bit", dict.at("shift")}});
+      {casti32}, n->attrs.dict);
+    NodeEntry shift = qnode;
+    int bit = std::stoi(dict.at("shift"));
+    if (bit != 0) {
+      CHECK_GT(bit, 0);
+      shift = MakeNode("noise_lshift", node_name + "_lshift",
+        {shift}, {{"bit", dict.at("shift")}});
+    }
     NodeEntry clip = MakeNode("clip", node_name + "_clip",
       {shift}, {{"a_min", "-127"}, {"a_max", "127"}});
     NodeEntry casti8 = MakeNode("cast", node_name + "_cast",
@@ -78,35 +77,75 @@ inline FQuantizedOp AdditionQuantizedOp(const char* op_name) {
   return [=] (const NodePtr& n,
               const std::unordered_map<std::string, std::string>& dict) {
     std::string node_name = n->attrs.name;
-    std::string lname = n->inputs[0].node->attrs.name;
-    std::string rname = n->inputs[1].node->attrs.name;
+    NodeEntry lhs = n->inputs[0];
+    NodeEntry rhs = n->inputs[1];
+    std::string lname = lhs.node->attrs.name;
+    std::string rname = rhs.node->attrs.name;
     int shift_a = std::stoi(dict.at("shift_a"));
     int shift_b = std::stoi(dict.at("shift_b"));
     int shift_c = std::stoi(dict.at("shift_c"));
-    NodeEntry lhs = MakeNode("cast", lname + "_cast",
-      {n->inputs[0]}, {{"dtype", "int16"}});
-    NodeEntry rhs = MakeNode("cast", rname + "_cast",
-      {n->inputs[1]}, {{"dtype", "int16"}});
-    NodeEntry lhs_shift = lhs;
+    if (shift_a >= 7) {
+      LOG(INFO) << "skip add rhs: " << shift_a;
+      if (shift_a != shift_c) {
+        LOG(WARNING) << "skip addition but change the magnitude";
+        int bit = shift_c - shift_a;
+        CHECK_GT(bit, 0);
+        NodeEntry round = MakeNode("stochastic_round", lname + "_round",
+          {lhs}, {{"bit", std::to_string(bit)}});
+        return MakeNode("right_shift", lname + "_shift",
+          {round}, {{"bit", std::to_string(bit)}}).node;
+      }
+      return MakeNode("identity", lname + "_skip_add", {lhs}).node;
+    }
+    if (shift_b >= 7) {
+      LOG(INFO) << "skip add lhs: " << shift_b;
+      if (shift_b != shift_c) {
+        LOG(WARNING) << "skip addition but change the magnitude";
+        int bit = shift_c - shift_a;
+        CHECK_GT(bit, 0);
+        NodeEntry round = MakeNode("stochastic_round", rname + "_round",
+          {lhs}, {{"bit", std::to_string(bit)}});
+        return MakeNode("right_shift", rname + "_shift",
+          {round}, {{"bit", std::to_string(bit)}}).node;
+      }
+      return MakeNode("identity", rname + "_skip_add", {rhs}).node;
+    }
+
+    CHECK(shift_a >= 0 &&  shift_b >= 0);
+    NodeEntry lhs_cast = MakeNode("cast", lname + "_cast",
+      {lhs}, {{"dtype", "int16"}});
+    NodeEntry rhs_cast = MakeNode("cast", rname + "_cast",
+      {rhs}, {{"dtype", "int16"}});
+    NodeEntry lhs_shift = lhs_cast;
     if (shift_a != 0) {
-      lhs_shift = MakeNode("left_shift", lname + "_lshift",
-        {lhs}, {{"bit", dict.at("shift_a")}});
+      lhs_shift = MakeNode("noise_lshift", lname + "_lshift",
+        {lhs_cast}, {{"bit", dict.at("shift_a")}});
     }
-    NodeEntry rhs_shift = rhs;
+    NodeEntry rhs_shift = rhs_cast;
     if (shift_b != 0) {
-      rhs_shift = MakeNode("left_shift", rname + "_lshift",
-        {rhs}, {{"bit", dict.at("shift_b")}});
+      rhs_shift = MakeNode("noise_lshift", rname + "_lshift",
+        {rhs_cast}, {{"bit", dict.at("shift_b")}});
     }
-    NodeEntry qnode = MakeNode(op_name, node_name + "_quantized", {lhs_shift, rhs_shift});
+    NodeEntry qnode = MakeNode(op_name, node_name + "_quantized",
+      {lhs_shift, rhs_shift});
     NodeEntry out_shift = qnode;
     if (shift_c != 0) {
-      CHECK_GT(shift_c, 0);
-      out_shift = MakeNode("noise_shift", node_name + "_rshift",
-        {qnode}, {{"bit", dict.at("shift_c")}});
+      if (shift_c > 0) {
+        out_shift = MakeNode("stochastic_round", node_name + "_round",
+          {out_shift}, {{"bit", dict.at("shift_c")}});
+        out_shift = MakeNode("right_shift", node_name + "_rshift",
+          {out_shift}, {{"bit", dict.at("shift_c")}});
+        // out_shift = MakeNode("noise_shift", node_name + "_rshift",
+        //   {qnode}, {{"bit", dict.at("shift_c")}});
+      } else {
+        LOG(WARNING) << "elemwise add lower the precision: " << shift_c;
+        out_shift = MakeNode("noise_lshift", node_name + "_lshift",
+          {qnode}, {{"bit", std::to_string(-shift_c)}});
+      }
     }
-    NodeEntry clip = MakeNode("clip", "quantized_" + node_name + "_clip",
+    NodeEntry clip = MakeNode("clip", node_name + "_clip",
       {out_shift}, {{"a_min", "-127"}, {"a_max", "127"}});
-    NodeEntry cast = MakeNode("cast", "quantized_" + node_name + "_cast",
+    NodeEntry cast = MakeNode("cast", node_name + "_cast",
       {clip}, {{"dtype", "int8"}});
     return cast.node;
   };
@@ -123,12 +162,16 @@ inline FQuantizedOp MultiplicationQuantizedOp(const char* op_name) {
     NodeEntry rhs = MakeNode("cast", n->inputs[1].node->attrs.name + "_cast",
       {n->inputs[1]}, {{"dtype", "int32"}});
     NodeEntry qnode = MakeNode(op_name, node_name + "_quantized",
-      {lhs, rhs});
-    NodeEntry shift = MakeNode("noise_shift", node_name + "_rshift",
+      {lhs, rhs}, n->attrs.dict);
+
+    NodeEntry round = MakeNode("stochastic_round", node_name + "_round",
       {qnode}, {{"bit", dict.at("shift")}});
-    NodeEntry clip = MakeNode("clip", "quantized_" + node_name + "_clip",
+    NodeEntry shift = MakeNode("right_shift", node_name + "_rshift",
+      {round}, {{"bit", dict.at("shift")}});
+
+    NodeEntry clip = MakeNode("clip", node_name + "_clip",
       {shift}, {{"a_min", "-127"}, {"a_max", "127"}});
-    NodeEntry cast = MakeNode("cast", "quantized_" + node_name + "_cast",
+    NodeEntry cast = MakeNode("cast", node_name + "_cast",
       {clip}, {{"dtype", "int8"}});
     return cast.node;
   };
@@ -159,12 +202,16 @@ inline void AdditionCalibrate(uint32_t nid, const nnvm::NodePtr& n, const Indexe
   int kc = base2_range[nid];
 
   int kmin = std::min(ka, kb);
-  int kmax = std::max(ka, std::max(kb, kc));
-  int kbase = std::max(kmax - 7, kmin);
+  int sa = ka - kmin;
+  int sb = kb - kmin;
+  int sc = kc - kmin;
+  // int kmin = std::min(ka, kb);
+  // int kmax = std::max(ka, std::max(kb, kc));
+  // int kbase = std::max(kmax - 7, kmin);
 
-  int sa = std::max(ka - kbase, -7);
-  int sb = std::max(kb - kbase, -7);
-  int sc = kc - kbase;
+  // int sa = std::max(ka - kbase, -7);
+  // int sb = std::max(kb - kbase, -7);
+  // int sc = kc - kbase;
 
   (*dict)["shift_a"] = std::to_string(sa);  // lshift
   (*dict)["shift_b"] = std::to_string(sb);  // lshift
@@ -181,6 +228,9 @@ inline void MultiplicationCalibrate(uint32_t nid, const nnvm::NodePtr& n, const 
   int ka = base2_range[inputs[0].node_id];
   int kb = base2_range[inputs[1].node_id];
   int kc = base2_range[nid];
+  // f(qa, qb) = f(va * 128 / ka, vb * 128 / kb) = f(va, vb) * 2 * 14 / (ka * kb)
+  // = vc * (2^14) / (ka * kb) > qc / 2^7 * kc / (ka * kb)
+  // -> f(qa, qb) / 2^(kc + 7 - (ka + kb)) > qc
   int shift = kc + 7 - (ka + kb);
   CHECK_GT(shift, 0);
   CHECK_LT(shift, 15);
@@ -238,6 +288,23 @@ NNVM_REGISTER_OP(dequantize)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<QuantizeParam>);
 
 
+// stochastic round
+
+struct StochasticRoundParam : public dmlc::Parameter<StochasticRoundParam> {
+  int bit;
+  DMLC_DECLARE_PARAMETER(StochasticRoundParam) {
+    DMLC_DECLARE_FIELD(bit);
+  };
+};
+
+DMLC_REGISTER_PARAMETER(StochasticRoundParam);
+
+NNVM_REGISTER_ELEMWISE_UNARY_OP(stochastic_round)
+.add_arguments(StochasticRoundParam::__FIELDS__())
+.set_attr_parser(ParamParser<StochasticRoundParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<StochasticRoundParam>);
+
+
 // noise_shift
 
 struct NoiseShiftParam : public dmlc::Parameter<NoiseShiftParam> {
@@ -249,7 +316,7 @@ struct NoiseShiftParam : public dmlc::Parameter<NoiseShiftParam> {
 
 DMLC_REGISTER_PARAMETER(NoiseShiftParam);
 
-NNVM_REGISTER_ELEMWISE_UNARY_OP(noise_shift)
+NNVM_REGISTER_ELEMWISE_UNARY_OP(noise_lshift)
 .add_arguments(NoiseShiftParam::__FIELDS__())
 .set_attr_parser(ParamParser<NoiseShiftParam>)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<NoiseShiftParam>);
@@ -563,6 +630,8 @@ NNVM_REGISTER_OP(quantized_conv2d)
 .set_support_level(2);
 
 NNVM_REGISTER_OP(conv2d)
+// .set_attr<FQuantizedOp>("FQuantizedOp", MultiplicationQuantizedOp("quantized_conv2d"))
+// .set_attr<FCalibrate>("FCalibrate", MultiplicationCalibrate)
 .set_attr<FQuantizedOp>("FQuantizedOp",
 [] (const NodePtr& n, const std::unordered_map<std::string, std::string>& dict) {
   std::string node_name = n->attrs.name;
@@ -572,12 +641,16 @@ NNVM_REGISTER_OP(conv2d)
   int shift_b = std::stoi(dict.at("shift_b"));
   NodeEntry lhs_shift = n->inputs[0];
   if (shift_a != 0) {
-    lhs_shift = MakeNode("noise_shift", lname + "_rshift",
+    lhs_shift = MakeNode("stochastic_round", lname + "_round",
+      {lhs_shift}, {{"bit", dict.at("shift_a")}});
+    lhs_shift = MakeNode("right_shift", lname + "_rshift",
       {lhs_shift}, {{"bit", dict.at("shift_a")}});
   }
   NodeEntry rhs_shift = n->inputs[1];
   if (shift_b != 0) {
-    rhs_shift = MakeNode("noise_shift", rname + "_rshift",
+    rhs_shift = MakeNode("stochastic_round", rname + "_round",
+      {rhs_shift}, {{"bit", dict.at("shift_b")}});
+    rhs_shift = MakeNode("right_shift", rname + "_rshift",
       {rhs_shift}, {{"bit", dict.at("shift_b")}});
   }
 
