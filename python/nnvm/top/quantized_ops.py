@@ -87,6 +87,31 @@ def schedule_noise_lshift(_, outs, target):
     return tvm.create_schedule([x.op for x in outs])
 
 
+@tvm.register_func("compute_scale")
+def compute_scale(in_arr, out_arr):
+    iarr = in_arr.asnumpy()
+    arr = np.abs(iarr)
+    scale = np.amax(arr)
+    out_arr.copyfrom(scale.astype('float32'))
+
+@reg.register_compute("scale_to_range")
+def compute_scale_to_range(attrs, inputs, _):
+    target_scale = attrs.get_float('scale')
+    print("scale: {}".format(target_scale))
+    data = inputs[0]
+    real_scale = tvm.extern((1, ), [data],
+        lambda ins, outs: tvm.intrin.call_packed("compute_scale", ins[0], outs[0]),
+        name='compute_scale')
+    scaled_data = tvm.compute(data.shape, lambda *i: data(*i) / real_scale[0] * target_scale, name='scale')
+    print('dtype: {}'.format(scaled_data.dtype))
+    return scaled_data
+
+
+@reg.register_schedule("scale_to_range")
+def schedule_scale_to_range(_, outs, target):
+    return tvm.create_schedule([x.op for x in outs])
+
+
 @reg.register_compute("quantize")
 def compute_quantize(attrs, inputs, _):
     k = attrs.get_int('k')
