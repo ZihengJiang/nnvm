@@ -89,7 +89,6 @@ def get_bounds(records, mode='full', rate=None):
         return lower_bound, upper_bound
 
     if mode == 'full':
-        print("{}\n".format(records[15]))
         lower_bound = min(entry['min_value'] for entry in records)
         upper_bound = max(entry['max_value'] for entry in records)
         return lower_bound, upper_bound
@@ -132,13 +131,14 @@ def get_bounds(records, mode='full', rate=None):
 
 def collect_statistics(graph, dataset, params={}):
     mode = 'full'
-    mode = 'mean-max'
+    # mode = 'mean-max'
     # mode = 'partial'
     # mode = 'max-percentile'
     ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
     graph = graph.apply('SeparateBias')
     graph = _compiler.optimize(graph, ishapes, idtypes)
     graph, params = precompute_prune(graph, params)
+    return graph, params
     ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
 
     # transform to statistic graph
@@ -166,18 +166,40 @@ def collect_statistics(graph, dataset, params={}):
 
     # analysis
     print('records:')
-    base2_range = []
+    bounds = []
     for name in out_names:
         print('{}:'.format(name))
-        lower_bound, upper_bound = get_bounds(records[name], mode, 0.95)
-        k0 = _base2_range(lower_bound)
-        k1 = _base2_range(upper_bound)
-        print('lower={}, upper={}'.format(lower_bound, upper_bound))
-        print("k={}, k0={}, k1={}".format(max(k0, k1), k0, k1))
+        # num_node_entries, num_samples, min_max
+        for record in records[name]:
+            k0 = _base2_range(record['min_value'])
+            k1 = _base2_range(record['max_value'])
+            print("k={}, k0={}, k1={}".format(max(k0, k1), k0, k1))
+            bounds.append(max(k0, k1))
         print('')
-        base2_range.append(max(k0, k1))
 
-    graph._set_json_attr("base2_range", base2_range, "list_int")
+
+        # std::vector<std::vector<std::pair<float, float>>>>
+        # => std::vector<std::vector<int>>
+        # => flatten => std::vector<int>
+
+        # num_nodes, <inputs->outputs>
+        # vector<map<vector<int>, vector<int>>>
+
+
+        # lower_bound, upper_bound = get_bounds(records[name], mode, 0.95)
+        # k0 = _base2_range(lower_bound)
+        # k1 = _base2_range(upper_bound)
+        # print('lower={}, upper={}'.format(lower_bound, upper_bound))
+        # print("k={}, k0={}, k1={}".format(max(k0, k1), k0, k1))
+        # print('')
+        # for record in records[name]:
+        #     print('{}, {}'.format(record['min_value'], record['max_value']))
+
+        # print('')
+        # base2_range.append(max(k0, k1))
+
+    graph._set_json_attr("bounds", bounds, "list_int")
+    graph._set_json_attr("num_samples", len(dataset), "int")
     return graph, params
 
 
