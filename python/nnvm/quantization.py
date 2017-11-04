@@ -202,8 +202,21 @@ def collect_statistics(graph, dataset, params={}):
     graph._set_json_attr("num_samples", len(dataset), "int")
     return graph, params
 
+_MODE_STR2INT = {
+    'real': 0,
+    'base2': 1
+}
 
-def quantize(graph, debug=False):
+_DTYPE_STR2INT = {
+    'float32': 0,
+    'int32': 4,
+    'int16': 7,
+}
+
+def quantize(graph, mode='real', acc_dtype='int32', debug=False):
+
+    graph._set_json_attr("mode", int(_MODE_STR2INT[mode]), "int")
+    graph._set_json_attr("acc_dtype", int(_DTYPE_STR2INT[acc_dtype]), "int")
     graph._set_json_attr("debug", int(debug), "int")
     qgraph = graph.apply('Quantize')
     return qgraph

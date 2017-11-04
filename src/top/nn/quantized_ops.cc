@@ -19,6 +19,7 @@ namespace top {
 
 using compiler::TScaleMap;
 using compiler::TCalibInfo;
+using compiler::TQuantizeConfig;
 using compiler::FRTQuantize;
 using compiler::FSeparateBias;
 
@@ -46,7 +47,8 @@ inline FRTQuantize DefaultRTQuantize(const char* op_name) {
              const NodePtr& n,
              const IndexedGraph& idx,
              const TCalibInfo& calib,
-             const TScaleMap& scale_map) {
+             const TScaleMap& scale_map,
+             const TQuantizeConfig& config) {
     NodeEntry qnode = MakeNode(op_name, n->attrs.name,
       n->inputs, n->attrs.dict);
     CHECK_EQ(qnode.node->num_outputs(), 1);
@@ -64,21 +66,30 @@ inline FRTQuantize AdditionQuantize(const char* op_name) {
              const NodePtr& n,
              const IndexedGraph& idx,
              const TCalibInfo& calib,
-             const TScaleMap& scale_map) {
+             const TScaleMap& scale_map,
+             const TQuantizeConfig& config) {
     const auto& indexed_inputs = idx[nid].inputs;
     NodeEntry lscale = scale_map[idx.entry_id(indexed_inputs[0])];
     NodeEntry rscale = scale_map[idx.entry_id(indexed_inputs[1])];
     NodeEntry lhs = MakeNode("dequantize", n->attrs.name + "_lhs",
       {n->inputs[0], lscale});
-    NodeEntry rhs = MakeNode("dequantize", n->attrs.name + "_lhs",
+    NodeEntry rhs = MakeNode("dequantize", n->attrs.name + "_rhs",
       {n->inputs[1], rscale});
 
     NodeEntry node = MakeNode(op_name, n->attrs.name,
       {lhs, rhs}, n->attrs.dict);
-    NodeEntry scale = MakeNode("scale", n->attrs.name + "_scale",
-      {node}, n->attrs.dict);
+    NodeEntry scale;
+    if (config.mode == TQuantizeConfig::Mode::Base2) {
+      scale = MakeNode("scale", n->attrs.name + "_scale",
+        {node}, {{"mode", "base2"}});
+    } else if (config.mode == TQuantizeConfig::Mode::Real) {
+      scale = MakeNode("scale", n->attrs.name + "_scale",
+        {node}, {{"mode", "real"}});
+    } else {
+      LOG(FATAL) << "wrong config mode";
+    }
     NodeEntry qnode = MakeNode("quantize", n->attrs.name + "_i8",
-      {node, scale}, n->attrs.dict);
+      {node, scale});
     return std::vector<NodeEntry>({qnode, scale});
   };
 }
@@ -90,7 +101,8 @@ inline FRTQuantize MultiplicationQuantize(const char* op_name) {
              const NodePtr& n,
              const IndexedGraph& idx,
              const TCalibInfo& calib,
-             const TScaleMap& scale_map) {
+             const TScaleMap& scale_map,
+             const TQuantizeConfig& config) {
     NodeEntry lhs_i16 = MakeNode("cast", n->attrs.name + "_lhs",
       {n->inputs[0]}, {{"dtype", "int16"}});
     NodeEntry rhs_i16 = MakeNode("cast", n->attrs.name + "_rhs",
@@ -102,11 +114,22 @@ inline FRTQuantize MultiplicationQuantize(const char* op_name) {
     const auto& indexed_inputs = idx[nid].inputs;
     NodeEntry lscale = scale_map[idx.entry_id(indexed_inputs[0])];
     NodeEntry rscale = scale_map[idx.entry_id(indexed_inputs[1])];
-    NodeEntry scale = MakeNode("elemwise_mul", n->attrs.name + "_scale",
-      {lscale, rscale});
-    float scalar = (float)(std::pow(2, 15) - 1) / ((std::pow(2, 7) - 1) * std::pow(2, 7) - 1);
-    scale = MakeNode("__mul_scalar__", n->attrs.name + "_scale",
-      {scale}, {{"scalar", std::to_string(scalar)}});
+
+    NodeEntry scale;
+    if (config.mode == TQuantizeConfig::Mode::Real) {
+      scale = MakeNode("elemwise_mul", n->attrs.name + "_scale",
+        {lscale, rscale});
+      float scalar = (float)(std::pow(2, 15) - 1) / ((std::pow(2, 7) - 1) * std::pow(2, 7) - 1);
+      scale = MakeNode("__mul_scalar__", n->attrs.name + "_scale",
+        {scale}, {{"scalar", std::to_string(scalar)}});
+    } else if (config.mode == TQuantizeConfig::Mode::Base2) {
+      scale = MakeNode("elemwise_add", n->attrs.name + "_scale0",
+        {lscale, rscale});
+      scale = MakeNode("__add_scalar__", n->attrs.name + "_scale1",
+        {scale}, {{"scalar", std::to_string(15 - 7 - 7)}});
+    } else {
+      LOG(FATAL) << "wrong config mode";
+    }
 
     NodeEntry shrink = MakeNode("shrink_range", n->attrs.name + "_shrink",
       {qnode, scale});
@@ -170,23 +193,23 @@ NNVM_REGISTER_OP(dequantize)
 .add_argument("data_scale", "Tensor", "The input tensor.");
 
 
-// // stochastic round
-//
-// struct StochasticRoundParam : public dmlc::Parameter<StochasticRoundParam> {
-//   int bit;
-//   DMLC_DECLARE_PARAMETER(StochasticRoundParam) {
-//     DMLC_DECLARE_FIELD(bit);
-//   };
-// };
-//
-// DMLC_REGISTER_PARAMETER(StochasticRoundParam);
-//
-// NNVM_REGISTER_ELEMWISE_UNARY_OP(stochastic_round)
-// .add_arguments(StochasticRoundParam::__FIELDS__())
-// .set_attr_parser(ParamParser<StochasticRoundParam>)
-// .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<StochasticRoundParam>);
-//
-//
+// stochastic round
+
+struct StochasticRoundParam : public dmlc::Parameter<StochasticRoundParam> {
+  int bit;
+  DMLC_DECLARE_PARAMETER(StochasticRoundParam) {
+    DMLC_DECLARE_FIELD(bit);
+  };
+};
+
+DMLC_REGISTER_PARAMETER(StochasticRoundParam);
+
+NNVM_REGISTER_ELEMWISE_UNARY_OP(stochastic_round)
+.add_arguments(StochasticRoundParam::__FIELDS__())
+.set_attr_parser(ParamParser<StochasticRoundParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<StochasticRoundParam>);
+
+
 // // noise_shift
 //
 // struct NoiseShiftParam : public dmlc::Parameter<NoiseShiftParam> {
@@ -255,15 +278,14 @@ NNVM_REGISTER_OP(relu)
 // range
 
 struct ScaleParam : public dmlc::Parameter<ScaleParam> {
-  static constexpr int kFloat = 0;
+  static constexpr int kReal = 0;
   static constexpr int kBase2 = 1;
 
   int mode;
 
   DMLC_DECLARE_PARAMETER(ScaleParam) {
     DMLC_DECLARE_FIELD(mode)
-    .set_default(kFloat)
-    .add_enum("float", kFloat)
+    .add_enum("real", kReal)
     .add_enum("base2", kBase2);
   };
 };
@@ -421,7 +443,8 @@ NNVM_REGISTER_OP(dense)
                                          const NodePtr& n,
                                          const IndexedGraph& idx,
                                          const TCalibInfo& calib,
-                                         const TScaleMap& scale_map) {
+                                         const TScaleMap& scale_map,
+                                         const TQuantizeConfig& config) {
   auto ndict = n->attrs.dict;
   ndict["out_type"] = "int32";
   NodeEntry qnode = MakeNode("quantized_dense", n->attrs.name,
@@ -431,11 +454,20 @@ NNVM_REGISTER_OP(dense)
   const auto& indexed_inputs = idx[nid].inputs;
   NodeEntry lscale = scale_map[idx.entry_id(indexed_inputs[0])];
   NodeEntry rscale = scale_map[idx.entry_id(indexed_inputs[1])];
-  NodeEntry scale = MakeNode("elemwise_mul", n->attrs.name + "_scale",
-    {lscale, rscale});
-  float scalar = (float)(std::pow(2, 31) - 1) / ((std::pow(2, 7) - 1) * std::pow(2, 7) - 1);
-  scale = MakeNode("__mul_scalar__", n->attrs.name + "_scale",
-    {scale}, {{"scalar", std::to_string(scalar)}});
+
+  NodeEntry scale;
+  if (config.mode == TQuantizeConfig::Mode::Real) {
+    scale = MakeNode("elemwise_mul", n->attrs.name + "_scale",
+      {lscale, rscale});
+    float scalar = (float)(std::pow(2, 31) - 1) / ((std::pow(2, 7) - 1) * std::pow(2, 7) - 1);
+    scale = MakeNode("__mul_scalar__", n->attrs.name + "_scale",
+      {scale}, {{"scalar", std::to_string(scalar)}});
+  } else if (config.mode == TQuantizeConfig::Mode::Base2) {
+    scale = MakeNode("elemwise_add", n->attrs.name + "_scale",
+      {lscale, rscale});
+    scale = MakeNode("__add_scalar__", n->attrs.name + "_scale",
+      {scale}, {{"scalar", std::to_string(31 - 7 - 7)}});
+  }
 
   NodeEntry shrink = MakeNode("shrink_range", n->attrs.name + "_shrink",
     {qnode, scale});
@@ -620,21 +652,43 @@ NNVM_REGISTER_OP(conv2d)
                                          const NodePtr& n,
                                          const IndexedGraph& idx,
                                          const TCalibInfo& calib,
-                                         const TScaleMap& scale_map) {
+                                         const TScaleMap& scale_map,
+                                         const TQuantizeConfig& config) {
   auto ndict = n->attrs.dict;
   ndict["out_type"] = "int32";
+
+  NodeEntry lhs = n->inputs[0];
+  NodeEntry rhs = n->inputs[1];
+  // lhs = MakeNode("stochastic_round", n->attrs.name + "_lround",
+  //   {lhs}, {{"bit", "1"}});
+  // lhs = MakeNode("right_shift", n->attrs.name + "_lshift",
+  //   {lhs}, {{"bit", "1"}});
+  // rhs = MakeNode("stochastic_round", n->attrs.name + "_rround",
+  //   {rhs}, {{"bit", "1"}});
+  // rhs = MakeNode("right_shift", n->attrs.name + "_rshift",
+  //   {rhs}, {{"bit", "1"}});
+
   NodeEntry qnode = MakeNode("quantized_conv2d", n->attrs.name,
-    n->inputs, ndict);
+    {lhs, rhs}, ndict);
 
   // 2^31 * (lscale) / 2^7 * (rscale) / 2^7
   const auto& indexed_inputs = idx[nid].inputs;
   NodeEntry lscale = scale_map[idx.entry_id(indexed_inputs[0])];
   NodeEntry rscale = scale_map[idx.entry_id(indexed_inputs[1])];
-  NodeEntry scale = MakeNode("elemwise_mul", n->attrs.name + "_scale",
-    {lscale, rscale});
-  float scalar = (float)(std::pow(2, 31) - 1) / ((std::pow(2, 7) - 1) * std::pow(2, 7) - 1);
-  scale = MakeNode("__mul_scalar__", n->attrs.name + "_scale",
-    {scale}, {{"scalar", std::to_string(scalar)}});
+
+  NodeEntry scale;
+  if (config.mode == TQuantizeConfig::Mode::Real) {
+    scale = MakeNode("elemwise_mul", n->attrs.name + "_scale0",
+      {lscale, rscale});
+    float scalar = (float)(std::pow(2, 31) - 1) / ((std::pow(2, 7) - 1) * std::pow(2, 7) - 1);
+    scale = MakeNode("__mul_scalar__", n->attrs.name + "_scale1",
+      {scale}, {{"scalar", std::to_string(scalar)}});
+  } else if (config.mode == TQuantizeConfig::Mode::Base2) {
+    scale = MakeNode("elemwise_add", n->attrs.name + "_scale0",
+      {lscale, rscale});
+    scale = MakeNode("__add_scalar__", n->attrs.name + "_scale1",
+      {scale}, {{"scalar", std::to_string(31 - 7 - 7)}});
+  }
 
   NodeEntry shrink = MakeNode("shrink_range", n->attrs.name + "_shrink",
     {qnode, scale});
@@ -669,7 +723,8 @@ NNVM_REGISTER_OP(global_avg_pool2d)
     const NodePtr& n,
     const IndexedGraph& idx,
     const TCalibInfo& calib,
-    const TScaleMap& scale_map) {
+    const TScaleMap& scale_map,
+    const TQuantizeConfig& config) {
   const auto& indexed_inputs = idx[nid].inputs;
   NodeEntry scale = scale_map[idx.entry_id(indexed_inputs[0])];
 
