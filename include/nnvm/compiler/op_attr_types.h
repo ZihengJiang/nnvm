@@ -108,6 +108,28 @@ using FCalibrate = std::function<void(
 
 using FSeparateBias = std::function<std::vector<NodeEntry>(
     const NodePtr& n)>;
+
+using TScaleMap = std::vector<NodeEntry>;
+
+// for every operator: input k -> output k
+using TCalibInfo = std::vector<std::map<std::vector<int>, std::vector<int>>>;
+
+struct TQuantizeConfig {
+  enum Mode {Real=0, Base2=1};
+  TQuantizeConfig::Mode mode;
+  // consistent with data type
+  int acc_dtype;
+};
+
+// return outputs and their scales
+using FRTQuantize = std::function<std::vector<NodeEntry>(
+    uint32_t nid,
+    const NodePtr& n,
+    const IndexedGraph& idx,
+    const TCalibInfo& calib,
+    const TScaleMap& scale_map,
+    const TQuantizeConfig& config)>;
+
 }  // namespace compiler
 }  // namespace nnvm
 #endif  // NNVM_COMPILER_OP_ATTR_TYPES_H_

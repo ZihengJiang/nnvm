@@ -44,7 +44,6 @@ def stochastic_round(in_arr, out_arr, bit):
     # central to zero
     oarr = oarr * (farr != 0)
     out_arr.copyfrom(oarr.astype(dtype))
-    # idx = ((31, ), (29, ))
     # print('iarr: {}'.format(iarr[idx]))
     # print('farr: {}'.format(farr[idx]))
     # print('tarr: {}'.format(tarr[idx]))
@@ -133,7 +132,7 @@ def schedule_quantize(_, outs, target):
 def _add_noise(in_arr, out_arr, low, high):
     iarr = in_arr.asnumpy()
     assert iarr.dtype == 'float32'
-    noise = np.random.uniform(0.0, 0.499, iarr.shape) * (iarr != 0)
+    noise = np.random.uniform(0.0, 0.5-1e-6, iarr.shape) * (iarr != 0)
     iarr = iarr + noise
     out_arr.copyfrom(iarr)
 
@@ -257,6 +256,7 @@ def _base2_round(in_arr, out_arr):
         else:
             break
     oarr = np.array(k, dtype=out_arr.dtype)
+    oarr = np.array(pow(2, k), dtype=out_arr.dtype)
     out_arr.copyfrom(oarr)
 
 def base2_round(scale):
@@ -264,7 +264,8 @@ def base2_round(scale):
     base2_scale = tvm.extern((1, ), [scale],
         lambda ins, outs: tvm.intrin.call_packed("base2_round", ins[0], outs[0]),
         name='base2_round')
-    return topi.cast(base2_scale, 'int32')
+    # return topi.cast(base2_scale, 'int32')
+    return topi.cast(base2_scale, 'float32')
 
 
 @reg.register_compute("scale")
@@ -300,6 +301,7 @@ def compute_shrink_range(attrs, inputs, _):
 
     quantile_scale = topi.max(topi.abs(flatten_data), keepdims=True)
     if scale.dtype == 'float32':
+        quantile_scale = tvm.compute((1, ), lambda i: 1.0 * quantile_scale[0])
         shrink_data = tvm.compute(data.shape, lambda *i: data(*i).astype('float32') * (2**7 - 1.0) / quantile_scale[0])
 
     elif scale.dtype == 'int32':

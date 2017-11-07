@@ -90,6 +90,8 @@ TCalibInfo CalibStatisticalAnalyse(const IndexedGraph& idx,
   return info;
 }
 
+using compiler::TQuantizeConfig;
+
 Graph QuantizeGraphWithoutCalibration(nnvm::Graph&& src) {
   LOG(INFO) << "quantize begin";
   const auto& idx = src.indexed_graph();
@@ -98,8 +100,11 @@ Graph QuantizeGraphWithoutCalibration(nnvm::Graph&& src) {
   // const auto& bounds = src.GetAttr<std::vector<int>>("bounds");
   // int num_samples = src.GetAttr<int>("num_samples");
   // TCalibInfo calib_info = CalibStatisticalAnalyse(idx, num_samples, bounds);
+  int mode = src.GetAttr<int>("mode");
+  int acc_dtype = src.GetAttr<int>("acc_dtype");
   int debug = src.GetAttr<int>("debug");
   TCalibInfo calib_info;
+  TQuantizeConfig config{static_cast<TQuantizeConfig::Mode>(mode), acc_dtype};
 
   std::unordered_map<Node*, NodeEntry> quantized_var;
   std::unordered_map<Node*, int> reverse_mirror;
@@ -119,7 +124,8 @@ Graph QuantizeGraphWithoutCalibration(nnvm::Graph&& src) {
           if (quantized_var.count(e.node.get())) {
             n->inputs[i] = quantized_var.at(e.node.get());
           } else {
-            NodeEntry scale = MakeNode("scale", e.node->attrs.name + "_scale", {e});
+            NodeEntry scale = MakeNode("scale", e.node->attrs.name + "_scale",
+              {e}, {{"mode", mode == 0 ? "real" : "base2"}});
             scale_map[idx.entry_id(e)] = scale;
 
             NodeEntry quantize = MakeQuantizeNode(e, scale);
@@ -134,7 +140,7 @@ Graph QuantizeGraphWithoutCalibration(nnvm::Graph&& src) {
       /// assume only one output;
 
       auto fquantize = quantize_map[n->op()];
-      std::vector<NodeEntry> qoutputs = fquantize(nid, temp, idx, calib_info, scale_map);
+      std::vector<NodeEntry> qoutputs = fquantize(nid, temp, idx, calib_info, scale_map, config);
       reverse_mirror.emplace(qoutputs[0].node.get(), nid);
       // update scale map
       scale_map[idx.entry_id(nid, 0)] = qoutputs[1];

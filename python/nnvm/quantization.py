@@ -145,8 +145,8 @@ def collect_statistics(graph, dataset, params={}):
     stats_graph = _collect_internal_outputs(graph);
 
     # build module
-    stats_graph, lib, _ = _compiler.build(stats_graph.symbol, 'llvm', ishapes, idtypes)
-    m = graph_runtime.create(stats_graph, lib, tvm.cpu(0))
+    stats_graph, lib, _ = _compiler.build(stats_graph.symbol, 'cuda', ishapes, idtypes)
+    m = graph_runtime.create(stats_graph, lib, tvm.gpu(0))
     m.set_input(**params)
 
     # execute and collect stats
