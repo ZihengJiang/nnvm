@@ -17,12 +17,11 @@
 namespace nnvm {
 namespace top {
 
-using compiler::FQuantizedOp;
-using compiler::FCalibrate;
+using compiler::FQuantize;
 using compiler::FSeparateBias;
 
 template<typename TParam>
-inline bool QuantizedOpType(const nnvm::NodeAttrs& attrs,
+inline bool QuantizeType(const nnvm::NodeAttrs& attrs,
                             std::vector<int>* in_type,
                             std::vector<int>* out_type) {
   const TParam& param = nnvm::get<TParam>(attrs.parsed);
@@ -31,37 +30,44 @@ inline bool QuantizedOpType(const nnvm::NodeAttrs& attrs,
   return true;
 }
 
-inline FQuantizedOp DefaultQuantizedOp(const char* op_name) {
+inline FQuantize DefaultQuantize(const char* op_name) {
   // identity, reshape, flatten, max_pool2d
   // dense, conv2d
-  return [=] (const NodePtr& n,
-              const std::unordered_map<std::string, std::string>& dict) {
-    auto ndict = n->attrs.dict;
-    for (const auto& kv : dict) {
-      ndict[kv.first] = kv.second;
-    }
-    NodeEntry qnode = MakeNode(op_name, n->attrs.name + "_quantized",
-      n->inputs, ndict);
+  return [=] (uint32_t nid,
+              const NodePtr& n,
+              const IndexedGraph& idx,
+              const std::vector<int>& scale_map) {
+    NodeEntry qnode = MakeNode(op_name, n->attrs.name,
+      n->inputs, n->attrs.dict);
     return qnode.node;
   };
 }
 
 
-inline FQuantizedOp ExpandQuantizedOp(const char* op_name) {
+inline FQuantize ExpandQuantize(const char* op_name) {
   // relu, global_avg_pool
-  return [=] (const NodePtr& n,
-              const std::unordered_map<std::string, std::string>& dict) {
+  return [=] (uint32_t nid,
+              const NodePtr& n,
+              const IndexedGraph& idx,
+              const std::vector<int>& scale_map) {
     std::string node_name = n->attrs.name;
+
+    const auto& inputs = idx[nid].inputs;
+    int k_i = scale_map[inputs[0].node_id];
+    int k_o = scale_map[nid];
+    int bit = (k_i - k_o);  // lshift
+    if (bit < 0) {
+      LOG(WARNING) << n->attrs.name << " increase the magnitude";
+    }
+
     NodeEntry casti32 = MakeNode("cast", n->inputs[0].node->attrs.name + "_cast",
       {n->inputs[0]}, {{"dtype", "int32"}});
-    NodeEntry qnode = MakeNode(op_name, node_name + "_quantized",
+    NodeEntry qnode = MakeNode(op_name, node_name,
       {casti32}, n->attrs.dict);
     NodeEntry shift = qnode;
-    int bit = std::stoi(dict.at("shift"));
-    if (bit != 0) {
-      CHECK_GT(bit, 0);
+    if (bit > 0) {
       shift = MakeNode("noise_lshift", node_name + "_lshift",
-        {shift}, {{"bit", dict.at("shift")}});
+        {shift}, {{"bit", std::to_string(bit)}});
     }
     NodeEntry clip = MakeNode("clip", node_name + "_clip",
       {shift}, {{"a_min", "-127"}, {"a_max", "127"}});
@@ -72,75 +78,83 @@ inline FQuantizedOp ExpandQuantizedOp(const char* op_name) {
 }
 
 
-inline FQuantizedOp AdditionQuantizedOp(const char* op_name) {
+inline FQuantize AdditionQuantize(const char* op_name) {
   // elemwise_add, broadcast_add
-  return [=] (const NodePtr& n,
-              const std::unordered_map<std::string, std::string>& dict) {
+  return [=] (uint32_t nid,
+              const NodePtr& n,
+              const IndexedGraph& idx,
+              const std::vector<int>& scale_map) {
     std::string node_name = n->attrs.name;
+
+    const auto& inputs = idx[nid].inputs;
+    int ka = scale_map[inputs[0].node_id];
+    int kb = scale_map[inputs[1].node_id];
+    int kc = scale_map[nid];
+
+    int kmin = std::min(ka, kb);
+    int sa = ka - kmin;
+    int sb = kb - kmin;
+    int sc = kc - kmin;
+
     NodeEntry lhs = n->inputs[0];
     NodeEntry rhs = n->inputs[1];
     std::string lname = lhs.node->attrs.name;
     std::string rname = rhs.node->attrs.name;
-    int shift_a = std::stoi(dict.at("shift_a"));
-    int shift_b = std::stoi(dict.at("shift_b"));
-    int shift_c = std::stoi(dict.at("shift_c"));
-    if (shift_a >= 7) {
-      LOG(INFO) << "skip add rhs: " << shift_a;
-      if (shift_a != shift_c) {
-        LOG(WARNING) << "skip addition but change the magnitude";
-        int bit = shift_c - shift_a;
-        CHECK_GT(bit, 0);
-        NodeEntry round = MakeNode("stochastic_round", lname + "_round",
-          {lhs}, {{"bit", std::to_string(bit)}});
-        return MakeNode("right_shift", lname + "_shift",
-          {round}, {{"bit", std::to_string(bit)}}).node;
-      }
+    if (sa >= 7) {
+      LOG(INFO) << n->attrs.name << " skip add rhs: " << sa;
+      // if (sa != sc) {
+      //   LOG(WARNING) << "skip addition but change the magnitude";
+      //   int bit = sc - sa;
+      //   CHECK_GT(bit, 0);
+      //   NodeEntry round = MakeNode("stochastic_round", lname + "_round",
+      //     {lhs}, {{"bit", std::to_string(bit)}});
+      //   return MakeNode("right_shift", lname + "_shift",
+      //     {round}, {{"bit", std::to_string(bit)}}).node;
+      // }
       return MakeNode("identity", lname + "_skip_add", {lhs}).node;
     }
-    if (shift_b >= 7) {
-      LOG(INFO) << "skip add lhs: " << shift_b;
-      if (shift_b != shift_c) {
-        LOG(WARNING) << "skip addition but change the magnitude";
-        int bit = shift_c - shift_a;
-        CHECK_GT(bit, 0);
-        NodeEntry round = MakeNode("stochastic_round", rname + "_round",
-          {lhs}, {{"bit", std::to_string(bit)}});
-        return MakeNode("right_shift", rname + "_shift",
-          {round}, {{"bit", std::to_string(bit)}}).node;
-      }
+    if (sb >= 7) {
+      LOG(INFO) << n->attrs.name << " skip add lhs: " << sb;
+      // if (sb != sc) {
+      //   LOG(WARNING) << "skip addition but change the magnitude";
+      //   int bit = sc - sb;
+      //   CHECK_GT(bit, 0);
+      //   NodeEntry round = MakeNode("stochastic_round", rname + "_round",
+      //     {lhs}, {{"bit", std::to_string(bit)}});
+      //   return MakeNode("right_shift", rname + "_shift",
+      //     {round}, {{"bit", std::to_string(bit)}}).node;
+      // }
       return MakeNode("identity", rname + "_skip_add", {rhs}).node;
     }
 
-    CHECK(shift_a >= 0 &&  shift_b >= 0);
+    CHECK(sa >= 0 && sb >= 0);
     NodeEntry lhs_cast = MakeNode("cast", lname + "_cast",
       {lhs}, {{"dtype", "int16"}});
     NodeEntry rhs_cast = MakeNode("cast", rname + "_cast",
       {rhs}, {{"dtype", "int16"}});
     NodeEntry lhs_shift = lhs_cast;
-    if (shift_a != 0) {
+    if (sa != 0) {
       lhs_shift = MakeNode("noise_lshift", lname + "_lshift",
-        {lhs_cast}, {{"bit", dict.at("shift_a")}});
+        {lhs_cast}, {{"bit", std::to_string(sa)}});
     }
     NodeEntry rhs_shift = rhs_cast;
-    if (shift_b != 0) {
+    if (sb != 0) {
       rhs_shift = MakeNode("noise_lshift", rname + "_lshift",
-        {rhs_cast}, {{"bit", dict.at("shift_b")}});
+        {rhs_cast}, {{"bit", std::to_string(sb)}});
     }
     NodeEntry qnode = MakeNode(op_name, node_name + "_quantized",
       {lhs_shift, rhs_shift});
     NodeEntry out_shift = qnode;
-    if (shift_c != 0) {
-      if (shift_c > 0) {
+    if (sc != 0) {
+      if (sc > 0) {
         out_shift = MakeNode("stochastic_round", node_name + "_round",
-          {out_shift}, {{"bit", dict.at("shift_c")}});
+          {out_shift}, {{"bit", std::to_string(sc)}});
         out_shift = MakeNode("right_shift", node_name + "_rshift",
-          {out_shift}, {{"bit", dict.at("shift_c")}});
-        // out_shift = MakeNode("noise_shift", node_name + "_rshift",
-        //   {qnode}, {{"bit", dict.at("shift_c")}});
+          {out_shift}, {{"bit", std::to_string(sc)}});
       } else {
-        LOG(WARNING) << "elemwise add lower the precision: " << shift_c;
+        LOG(WARNING) << "elemwise add lower the precision: " << sc;
         out_shift = MakeNode("noise_lshift", node_name + "_lshift",
-          {qnode}, {{"bit", std::to_string(-shift_c)}});
+          {qnode}, {{"bit", std::to_string(-sc)}});
       }
     }
     NodeEntry clip = MakeNode("clip", node_name + "_clip",
@@ -152,10 +166,23 @@ inline FQuantizedOp AdditionQuantizedOp(const char* op_name) {
 }
 
 
-inline FQuantizedOp MultiplicationQuantizedOp(const char* op_name) {
+inline FQuantize MultiplicationQuantize(const char* op_name) {
   // elemwise_mul, broadcast_mul
-  return [=] (const NodePtr& n,
-              const std::unordered_map<std::string, std::string>& dict) {
+  return [=] (uint32_t nid,
+              const NodePtr& n,
+              const IndexedGraph& idx,
+              const std::vector<int>& scale_map) {
+    const auto& inputs = idx[nid].inputs;
+    int ka = scale_map[inputs[0].node_id];
+    int kb = scale_map[inputs[1].node_id];
+    int kc = scale_map[nid];
+    // qc = f(qa, qb) = f(va * 2^7 / 2^ka, vb * 2^7 / 2^kb) = f(va, vb) * 2^(14 - a + b)
+    // |vc| * 2^(14 - a - b) < 2^kc * 2^(14 - ka - kb)
+    // qc ~ (14 + kc - ka - kb)
+    int bit = kc + 7 - (ka + kb);
+    // CHECK_GT(bit, 0);
+    // CHECK_LT(bit, 15);
+
     std::string node_name = n->attrs.name;
     NodeEntry lhs = MakeNode("cast", n->inputs[0].node->attrs.name + "_cast",
       {n->inputs[0]}, {{"dtype", "int32"}});
@@ -164,10 +191,13 @@ inline FQuantizedOp MultiplicationQuantizedOp(const char* op_name) {
     NodeEntry qnode = MakeNode(op_name, node_name + "_quantized",
       {lhs, rhs}, n->attrs.dict);
 
-    NodeEntry round = MakeNode("stochastic_round", node_name + "_round",
-      {qnode}, {{"bit", dict.at("shift")}});
-    NodeEntry shift = MakeNode("right_shift", node_name + "_rshift",
-      {round}, {{"bit", dict.at("shift")}});
+    NodeEntry shift = qnode;
+    if (bit > 0) {
+      NodeEntry round = MakeNode("stochastic_round", node_name + "_round",
+        {qnode}, {{"bit", std::to_string(bit)}});
+      shift = MakeNode("right_shift", node_name + "_rshift",
+        {round}, {{"bit", std::to_string(bit)}});
+    }
 
     NodeEntry clip = MakeNode("clip", node_name + "_clip",
       {shift}, {{"a_min", "-127"}, {"a_max", "127"}});
@@ -175,67 +205,6 @@ inline FQuantizedOp MultiplicationQuantizedOp(const char* op_name) {
       {clip}, {{"dtype", "int8"}});
     return cast.node;
   };
-}
-
-
-inline void ExpandCalibrate(uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-                            const std::vector<int>& base2_range,
-                            std::unordered_map<std::string, std::string>* dict) {
-  // relu, global_avg_pool
-  const auto& inputs = idx[nid].inputs;
-  int k_i = base2_range[inputs[0].node_id];
-  int k_o = base2_range[nid];
-  int shift = (k_i - k_o);  // lshift
-  CHECK_GE(shift, 0);
-  (*dict)["shift"] = std::to_string(shift);
-}
-
-
-inline void AdditionCalibrate(uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-                              const std::vector<int>& base2_range,
-                              std::unordered_map<std::string, std::string>* dict) {
-  // elemwise_add, broadcast_add
-  // TODO abs(max, min) >= 7
-  const auto& inputs = idx[nid].inputs;
-  int ka = base2_range[inputs[0].node_id];
-  int kb = base2_range[inputs[1].node_id];
-  int kc = base2_range[nid];
-
-  int kmin = std::min(ka, kb);
-  int sa = ka - kmin;
-  int sb = kb - kmin;
-  int sc = kc - kmin;
-  // int kmin = std::min(ka, kb);
-  // int kmax = std::max(ka, std::max(kb, kc));
-  // int kbase = std::max(kmax - 7, kmin);
-
-  // int sa = std::max(ka - kbase, -7);
-  // int sb = std::max(kb - kbase, -7);
-  // int sc = kc - kbase;
-
-  (*dict)["shift_a"] = std::to_string(sa);  // lshift
-  (*dict)["shift_b"] = std::to_string(sb);  // lshift
-  (*dict)["shift_c"] = std::to_string(sc);  // rshift
-  (*dict)["out_type"] = "int8";
-}
-
-
-inline void MultiplicationCalibrate(uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-                                    const std::vector<int>& base2_range,
-                                    std::unordered_map<std::string, std::string>* dict) {
-  // elemwise_mul, broadcast_mul, dense, conv2d
-  const auto& inputs = idx[nid].inputs;
-  int ka = base2_range[inputs[0].node_id];
-  int kb = base2_range[inputs[1].node_id];
-  int kc = base2_range[nid];
-  // f(qa, qb) = f(va * 128 / ka, vb * 128 / kb) = f(va, vb) * 2 * 14 / (ka * kb)
-  // = vc * (2^14) / (ka * kb) > qc / 2^7 * kc / (ka * kb)
-  // -> f(qa, qb) / 2^(kc + 7 - (ka + kb)) > qc
-  int shift = kc + 7 - (ka + kb);
-  CHECK_GT(shift, 0);
-  CHECK_LT(shift, 15);
-  (*dict)["shift"] = std::to_string(shift);
-  (*dict)["out_type"] = "int8";
 }
 
 
@@ -261,7 +230,7 @@ NNVM_REGISTER_OP(quantize)
 .set_num_inputs(1)
 .set_num_outputs(1)
 .set_attr<FInferShape>("FInferShape", ElemwiseShape<1, 1>)
-.set_attr<FInferType>("FInferType", QuantizedOpType<QuantizeParam>)
+.set_attr<FInferType>("FInferType", QuantizeType<QuantizeParam>)
 .add_argument("data", "Tensor", "The input tensor.")
 .add_arguments(QuantizeParam::__FIELDS__())
 .set_attr_parser(ParamParser<QuantizeParam>)
@@ -325,54 +294,49 @@ NNVM_REGISTER_ELEMWISE_UNARY_OP(noise_lshift)
 // quantized elemwise_add
 
 NNVM_REGISTER_OP(elemwise_add)
-.set_attr<FQuantizedOp>("FQuantizedOp", AdditionQuantizedOp("elemwise_add"))
-.set_attr<FCalibrate>("FCalibrate", AdditionCalibrate);
+.set_attr<FQuantize>("FQuantize", AdditionQuantize("elemwise_add"));
 
 
 // quantized broadcast_add
 
 NNVM_REGISTER_OP(broadcast_add)
-.set_attr<FQuantizedOp>("FQuantizedOp", AdditionQuantizedOp("broadcast_add"))
-.set_attr<FCalibrate>("FCalibrate", AdditionCalibrate);
+.set_attr<FQuantize>("FQuantize", AdditionQuantize("broadcast_add"));
 
 
 // quantized elemwise_mul
 
 NNVM_REGISTER_OP(elemwise_mul)
-.set_attr<FQuantizedOp>("FQuantizedOp", MultiplicationQuantizedOp("elemwise_mul"))
-.set_attr<FCalibrate>("FCalibrate", MultiplicationCalibrate);
+.set_attr<FQuantize>("FQuantize", MultiplicationQuantize("elemwise_mul"));
 
 
 // quantized broadcast_mul
 
 NNVM_REGISTER_OP(broadcast_mul)
-.set_attr<FQuantizedOp>("FQuantizedOp", MultiplicationQuantizedOp("broadcast_mul"))
-.set_attr<FCalibrate>("FCalibrate", MultiplicationCalibrate);
+.set_attr<FQuantize>("FQuantize", MultiplicationQuantize("broadcast_mul"));
 
 
 // quantized identity
 
 NNVM_REGISTER_OP(identity)
-.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("identity"));
+.set_attr<FQuantize>("FQuantize", DefaultQuantize("identity"));
 
 
 // quantized reshape
 
 NNVM_REGISTER_OP(reshape)
-.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("reshape"));
+.set_attr<FQuantize>("FQuantize", DefaultQuantize("reshape"));
 
 
 // quantized flatten
 
 NNVM_REGISTER_OP(flatten)
-.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("flatten"));
+.set_attr<FQuantize>("FQuantize", DefaultQuantize("flatten"));
 
 
 // quantized relu
 
 NNVM_REGISTER_OP(relu)
-.set_attr<FQuantizedOp>("FQuantizedOp", ExpandQuantizedOp("relu"))
-.set_attr<FCalibrate>("FCalibrate", ExpandCalibrate);
+.set_attr<FQuantize>("FQuantize", ExpandQuantize("relu"));
 
 
 // quantized dense
@@ -446,12 +410,11 @@ NNVM_REGISTER_OP(quantized_dense)
 .set_num_inputs(UseBiasNumInputs<QuantizedDenseParam>)
 .set_attr<FListInputNames>("FListInputNames", UseBiasListInputNames<QuantizedDenseParam>)
 .set_attr<FInferShape>("FInferShape", QuantizedDenseShape)
-.set_attr<FInferType>("FInferType", QuantizedOpType<QuantizedDenseParam>)
+.set_attr<FInferType>("FInferType", QuantizeType<QuantizedDenseParam>)
 .set_support_level(1);
 
 NNVM_REGISTER_OP(dense)
-.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("quantized_dense"))
-.set_attr<FCalibrate>("FCalibrate", MultiplicationCalibrate)
+.set_attr<FQuantize>("FQuantize", MultiplicationQuantize("quantized_dense"))
 .set_attr<FSeparateBias>("FSeparateBias", [] (const NodePtr& n) {
   const DenseParam& param = nnvm::get<DenseParam>(n->attrs.parsed);
   if (param.use_bias == false) return std::vector<NodeEntry>({NodeEntry{n, 0, 0}});
@@ -630,59 +593,7 @@ NNVM_REGISTER_OP(quantized_conv2d)
 .set_support_level(2);
 
 NNVM_REGISTER_OP(conv2d)
-// .set_attr<FQuantizedOp>("FQuantizedOp", MultiplicationQuantizedOp("quantized_conv2d"))
-// .set_attr<FCalibrate>("FCalibrate", MultiplicationCalibrate)
-.set_attr<FQuantizedOp>("FQuantizedOp",
-[] (const NodePtr& n, const std::unordered_map<std::string, std::string>& dict) {
-  std::string node_name = n->attrs.name;
-  std::string lname = n->inputs[0].node->attrs.name;
-  std::string rname = n->inputs[1].node->attrs.name;
-  int shift_a = std::stoi(dict.at("shift_a"));
-  int shift_b = std::stoi(dict.at("shift_b"));
-  NodeEntry lhs_shift = n->inputs[0];
-  if (shift_a != 0) {
-    lhs_shift = MakeNode("stochastic_round", lname + "_round",
-      {lhs_shift}, {{"bit", dict.at("shift_a")}});
-    lhs_shift = MakeNode("right_shift", lname + "_rshift",
-      {lhs_shift}, {{"bit", dict.at("shift_a")}});
-  }
-  NodeEntry rhs_shift = n->inputs[1];
-  if (shift_b != 0) {
-    rhs_shift = MakeNode("stochastic_round", rname + "_round",
-      {rhs_shift}, {{"bit", dict.at("shift_b")}});
-    rhs_shift = MakeNode("right_shift", rname + "_rshift",
-      {rhs_shift}, {{"bit", dict.at("shift_b")}});
-  }
-
-  std::unordered_map<std::string, std::string> ndict = n->attrs.dict;
-  ndict["shift"] = dict.at("shift_c");
-  ndict["out_type"] = dict.at("out_type");
-  NodeEntry qnode = MakeNode("quantized_conv2d", node_name + "_quantized",
-    {lhs_shift, rhs_shift}, ndict);
-  return qnode.node;
-})
-.set_attr<FCalibrate>("FCalibrate",
-[] (uint32_t nid, const nnvm::NodePtr& n, const IndexedGraph& idx,
-    const std::vector<int>& base2_range,
-   std::unordered_map<std::string, std::string>* dict) {
-  const auto& inputs = idx[nid].inputs;
-  int ka = base2_range[inputs[0].node_id];
-  int kb = base2_range[inputs[1].node_id];
-  int kc = base2_range[nid];
-
-  int sa = 0;
-  int sb = 0;
-  int diff = (kc + 14 - 15 - (ka + kb));
-  if (diff > 0) {
-    sa += diff / 2;
-    sb += diff - diff / 2;
-  }
-  int sc = kc + 14 - (ka + kb) - (sa + sb) - 7;
-  (*dict)["shift_a"] = std::to_string(sa);
-  (*dict)["shift_b"] = std::to_string(sb);
-  (*dict)["shift_c"] = std::to_string(sc);
-  (*dict)["out_type"] = "int8";
-})
+.set_attr<FQuantize>("FQuantize", MultiplicationQuantize("quantized_conv2d"))
 .set_attr<FSeparateBias>("FSeparateBias", [] (const NodePtr& n) {
   const Conv2DParam& param = nnvm::get<Conv2DParam>(n->attrs.parsed);
   if (param.use_bias == false) return std::vector<NodeEntry>({NodeEntry{n, 0, 0}});
@@ -702,14 +613,13 @@ NNVM_REGISTER_OP(conv2d)
 // quantized max_pool2d
 
 NNVM_REGISTER_OP(max_pool2d)
-.set_attr<FQuantizedOp>("FQuantizedOp", DefaultQuantizedOp("max_pool2d"));
+.set_attr<FQuantize>("FQuantize", DefaultQuantize("max_pool2d"));
 
 
 // quantized global_avg_pool2d
 
 NNVM_REGISTER_OP(global_avg_pool2d)
-.set_attr<FQuantizedOp>("FQuantizedOp", ExpandQuantizedOp("global_avg_pool2d"))
-.set_attr<FCalibrate>("FCalibrate", ExpandCalibrate);
+.set_attr<FQuantize>("FQuantize", ExpandQuantize("global_avg_pool2d"));
 
 }  // namespace top
 }  // namespace nnvm

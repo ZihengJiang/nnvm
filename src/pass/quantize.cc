@@ -18,12 +18,12 @@ namespace nnvm {
 namespace pass {
 namespace {
 
-using compiler::FQuantizedOp;
-using compiler::FCalibrate;
+using compiler::FQuantize;
 
 inline NodeEntry MakeQuantizeNode(NodeEntry e, int k) {
+  std::string name = e.node->attrs.name;
   NodeEntry quantize = MakeNode("quantize",
-    e.node->attrs.name + "_quantized", {e}, {{"k", std::to_string(k)}});
+    name + "_quantized", {e}, {{"k", std::to_string(k)}});
   return quantize;
 }
 
@@ -35,8 +35,7 @@ inline NodeEntry MakeDequantizeNode(NodeEntry e, int k) {
 
 
 Graph QuantizeGraph(nnvm::Graph&& src) {
-  static auto& quantized_op_map = Op::GetAttr<FQuantizedOp>("FQuantizedOp");
-  static auto& fcalibrate_map = Op::GetAttr<FCalibrate>("FCalibrate");
+  static auto& quantized_op_map = Op::GetAttr<FQuantize>("FQuantize");
   const auto& base2_range = src.GetAttr<std::vector<int>>("base2_range");
   int debug = src.GetAttr<int>("debug");
   const auto& idx = src.indexed_graph();
@@ -47,12 +46,6 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
   auto transform = [&](uint32_t nid, const NodePtr& n, std::vector<NodeEntry>* ret) {
     if (n->is_variable()) return false;
     if (quantized_op_map.count(n->op())) {
-      std::unordered_map<std::string, std::string> dict;
-      if (fcalibrate_map.count(n->op())) {
-        auto fcalibrate = fcalibrate_map[n->op()];
-        fcalibrate(nid, n, idx, base2_range, &dict);
-      }
-
       NodePtr temp = MakeNode(n->op()->name.c_str(), n->attrs.name, n->inputs, n->attrs.dict).node;
       for (size_t i = 0; i < temp->inputs.size(); ++i) {
         const auto& e = temp->inputs[i];
@@ -69,7 +62,7 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
       }
 
       auto fquantized_op = quantized_op_map[n->op()];
-      NodePtr qnode = fquantized_op(temp, dict);
+      NodePtr qnode = fquantized_op(nid, temp, idx, base2_range);
       reverse_mirror.emplace(qnode.get(), nid);
 
       std::vector<NodeEntry> outputs;

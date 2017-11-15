@@ -161,13 +161,7 @@ def compute_quantized_dense(attrs, inputs, _):
     k = tvm.reduce_axis((0, l), name='k')
     out = tvm.compute((m, n),
         lambda i, j: tvm.sum(data[i][k].astype(cmp_dtype) * weight[j][k].astype(cmp_dtype), axis=k))
-
-    if out_dtype == 'int8':
-        assert shift >= 1
-        shift_out = noise_rshift(out, shift)
-        return topi.cast(topi.clip(shift_out, -127, 127), out_dtype)
-    else:
-        return out_i16
+    return out
 
 @reg.register_schedule("quantized_dense")
 def schedule_quantized_dense(_, outs, target):
@@ -184,7 +178,7 @@ def compute_quantized_conv2d(attrs, inputs, _):
     layout = attrs["layout"]
     shift = attrs.get_int('shift')
     out_dtype = attrs['out_type']
-    cmp_dtype = 'int16' # compute data type
+    cmp_dtype = 'int32' # compute data type
 
     assert layout == "NCHW", "only support nchw for now"
     assert dilation == (1, 1), "not support dilate now"
@@ -196,12 +190,8 @@ def compute_quantized_conv2d(attrs, inputs, _):
     else:
         raise ValueError("not support arbitrary group number for now")
 
-    if out_dtype == 'int8':
-        assert shift >= 1
-        shift_out = noise_rshift(out, shift)
-        return topi.cast(topi.clip(shift_out, -127, 127), out_dtype)
-    else:
-        return out
+    assert out_dtype == cmp_dtype
+    return out
 
 @reg.register_schedule("quantized_conv2d")
 def schedule_quantized_conv2d(_, outs, target):
