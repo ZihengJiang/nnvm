@@ -23,16 +23,16 @@ using compiler::FQuantize;
 static constexpr int storage_bit = 8;
 // input bit, weight bit, act bit
 
-inline NodeEntry MakeQuantizeNode(NodeEntry e, int qbit) {
+inline NodeEntry MakeQuantizeNode(NodeEntry e, int repr_bit) {
   std::string name = e.node->attrs.name;
-  NodeEntry quantize = MakeNode("quantize",
-    name + "_quantized", {e}, {{"qv", std::to_string(qbit)}, {"out_type", "int8"}});
+  NodeEntry quantize = MakeNode("quantize", name + "_quantize",
+    {e}, {{"repr_bit", std::to_string(repr_bit)}, {"out_type", "int8"}});
   return quantize;
 }
 
-inline NodeEntry MakeDequantizeNode(NodeEntry e, int qbit) {
-  NodeEntry dequantize = MakeNode("dequantize",
-    e.node->attrs.name + "_dequantized", {e}, {{"qv", std::to_string(qbit)}});
+inline NodeEntry MakeDequantizeNode(NodeEntry e, int repr_bit) {
+  NodeEntry dequantize = MakeNode("dequantize", e.node->attrs.name + "_dequantize",
+    {e}, {{"repr_bit", std::to_string(repr_bit)}});
   return dequantize;
 }
 
@@ -45,7 +45,7 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
   std::unordered_map<Node*, NodeEntry> quantized_var;
   std::unordered_map<Node*, int> reverse_mirror;
   // the bit of every quantile
-  std::vector<int> qbit_map(idx.num_node_entries(), 0);
+  std::vector<int> repr_bit_map(idx.num_node_entries(), 0);
 
   std::vector<NodeEntry> debug_outputs;
   auto transform = [&](uint32_t nid, const NodePtr& n, std::vector<NodeEntry>* ret) {
@@ -59,9 +59,9 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
             n->inputs[i] = quantized_var.at(e.node.get());
           } else {
             int k = base2_range[idx.entry_id(e)];
-            int qbit = k - (storage_bit - 1);
-            qbit_map[idx.entry_id(e)] = qbit;
-            NodeEntry quantize = MakeQuantizeNode(e, qbit);
+            int repr_bit = k - (storage_bit - 1);
+            repr_bit_map[idx.entry_id(e)] = repr_bit;
+            NodeEntry quantize = MakeQuantizeNode(e, repr_bit);
             quantized_var.emplace(e.node.get(), quantize);
             temp->inputs[i] = quantize;
           }
@@ -69,15 +69,15 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
       }
 
       auto fquantize = fquantize_map[n->op()];
-      std::vector<int> qbits(n->num_outputs());
-      NodePtr qnode = fquantize(nid, temp, idx, base2_range, qbit_map, &qbits);
+      std::vector<int> out_repr_bit(n->num_outputs());
+      NodePtr qnode = fquantize(nid, temp, idx, base2_range, repr_bit_map, &out_repr_bit);
       reverse_mirror.emplace(qnode.get(), nid);
 
       std::vector<NodeEntry> outputs;
       outputs.reserve(qnode->num_outputs());
       for (uint32_t i = 0; i < qnode->num_outputs(); ++i) {
         outputs.emplace_back(NodeEntry{qnode, 0, i});
-        qbit_map[idx.entry_id(nid, i)] = qbits[i];
+        repr_bit_map[idx.entry_id(nid, i)] = out_repr_bit[i];
         if (debug) {
           debug_outputs.emplace_back(NodeEntry{qnode, 0, i});
         }
@@ -96,7 +96,7 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
   outputs.reserve(src_outputs.size());
   for (const auto& e : src_outputs) {
     int eid = idx.entry_id(reverse_mirror.at(e.node.get()), 0);
-    NodeEntry dequantize = MakeDequantizeNode(e, qbit_map[eid]);
+    NodeEntry dequantize = MakeDequantizeNode(e, repr_bit_map[eid]);
     outputs.emplace_back(dequantize);
   }
   ret.outputs = std::move(outputs);

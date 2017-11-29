@@ -67,19 +67,16 @@ reg.register_schedule("stochastic_round", _fschedule_naive)
 
 @reg.register_compute("quantize")
 def compute_quantize(attrs, inputs, _):
-    # (-(2^k - 1), (2^k - 1))
-    qv = attrs.get_int('qv')
+    repr_bit = attrs.get_int('repr_bit')
     out_dtype = attrs['out_type']
     assert out_dtype == 'int8'
     data = inputs[0]
 
-    # clip
     bit_width = 8
-    # value per quantile
-    quantile = pow(2, qv)
-    limit = (pow(2, bit_width - 1) - 1) * quantile
+    repr_value = pow(2, repr_bit)
+    limit = (pow(2, bit_width - 1) - 1) * repr_value
     cliped_data = topi.clip(data, -limit, limit)
-    scaled_data = tvm.compute(data.shape, lambda *i: cliped_data(*i) / quantile)
+    scaled_data = tvm.compute(data.shape, lambda *i: cliped_data(*i) / repr_value)
     round_data = stochastic_round(scaled_data, 0)
     return topi.cast(round_data, out_dtype)
 
@@ -89,9 +86,9 @@ reg.register_schedule("quantize", _fschedule_naive)
 
 @reg.register_compute("dequantize")
 def compute_dequantize(attrs, inputs, _):
-    qv = attrs.get_int('qv')
+    repr_bit = attrs.get_int('repr_bit')
     data = inputs[0]
-    scaled_data = tvm.compute(data.shape, lambda *i: (data(*i)) * float(pow(2, qv)))
+    scaled_data = tvm.compute(data.shape, lambda *i: (data(*i)) * float(pow(2, repr_bit)))
     return scaled_data
 
 reg.register_schedule("dequantize", _fschedule_naive)
