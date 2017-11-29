@@ -98,7 +98,9 @@ using FQuantize = std::function<NodePtr(
     uint32_t nid,
     const NodePtr& n,
     const nnvm::IndexedGraph& idx,
-    const std::vector<int>& scale_map)>;
+    const std::vector<int>& scale_map,
+    const std::vector<int>& qbit_map,
+    std::vector<int> *out_qbit)>;
 
 using FSeparateBias = std::function<std::vector<NodeEntry>(
     const NodePtr& n)>;
