@@ -14,7 +14,7 @@
 #include "../elemwise_op_common.h"
 #include "../broadcast_op_common.h"
 
-#define USE_STOCHASTIC_SHIFT 1
+#define USE_STOCHASTIC_SHIFT 0
 
 namespace nnvm {
 namespace top {
@@ -98,55 +98,68 @@ inline FQuantize AdditionQuantize(const char* op_name) {
 
     int lvalid_bit = lscale_bit - lrepr_bit;
     int rvalid_bit = rscale_bit - rrepr_bit;
+    LOG(INFO) << "lscale_bit: " << lscale_bit;
+    LOG(INFO) << "lrepr_bit: " << lrepr_bit;
+    LOG(INFO) << "lvalid_bit: " << lvalid_bit;
+
 
     int lshift_bit = 0;
     int rshift_bit = 0;
 
     int lavaliable_bit = (accumulate_bit - 1) - (lvalid_bit);
 
+    if (lavaliable_bit <= 0) {
+      // TODO
+      int bit = 1 - lavaliable_bit;
+      inputs[lnode_idx] = MakeRightShiftNode(inputs[lnode_idx], n->inputs[lnode_idx].node->attrs.name + "_lshift",
+        lvalid_bit, bit);
+      lavaliable_bit = 1;
+      lvalid_bit -= bit;
+      lrepr_bit += bit;
+    }
     CHECK_GE(lavaliable_bit, 1);
 
-    // if (gap_bit <= (lavaliable_bit - 1)) {  // minus one to avoid overflow
-    //   // only need to do left shift
-    //   lshift_bit = gap_bit;
-    //   out_repr_bit->at(0) = rrepr_bit;
-    // } else {
-    //   // also need to do right shift
-    //   lshift_bit = (lavaliable_bit - 1);
-    //   rshift_bit = gap_bit - (lavaliable_bit - 1);
-    //   CHECK(rshift_bit < 31);
-    //   out_repr_bit->at(0) = rrepr_bit + rshift_bit;
-    // }
-
-    // // left shift
-    // if (lshift_bit != 0) {
-    //   inputs[lnode_idx] = MakeNode("left_shift", n->inputs[lnode_idx].node->attrs.name + "_lshift",
-    //     {inputs[lnode_idx]}, {{"bit", std::to_string(lshift_bit)}});
-    // }
-
-    // // right shift
-    // if (rshift_bit != 0) {
-    //   inputs[rnode_idx] = MakeRightShiftNode(inputs[rnode_idx], n->inputs[rnode_idx].node->attrs.name + "_rshift",
-    //     rvalid_bit, rshift_bit);
-    // }
-
-    // NodeEntry out = MakeNode(op_name, n->attrs.name, inputs);
-    // return out.node;
-
-
-    // TODO: here is essential
-    if (gap_bit <= (storage_bit - 1)) {
-      inputs[lnode_idx] = MakeNode("left_shift", n->inputs[lnode_idx].node->attrs.name + "_lshift",
-        {inputs[lnode_idx]}, {{"bit", std::to_string(gap_bit)}});
+    if (gap_bit <= (lavaliable_bit - 1)) {  // minus one to avoid overflow
+      // only need to do left shift
+      lshift_bit = gap_bit;
       out_repr_bit->at(0) = rrepr_bit;
     } else {
-      CHECK(gap_bit < 31);
-      inputs[rnode_idx] = MakeRightShiftNode(inputs[rnode_idx], n->inputs[rnode_idx].node->attrs.name + "_rshift", rvalid_bit, gap_bit);
-      out_repr_bit->at(0) = lrepr_bit;
+      // also need to do right shift
+      lshift_bit = (lavaliable_bit - 1);
+      rshift_bit = gap_bit - (lavaliable_bit - 1);
+      CHECK(rshift_bit < 31);
+      out_repr_bit->at(0) = rrepr_bit + rshift_bit;
+    }
+
+    // left shift
+    if (lshift_bit != 0) {
+      inputs[lnode_idx] = MakeNode("left_shift", n->inputs[lnode_idx].node->attrs.name + "_lshift",
+        {inputs[lnode_idx]}, {{"bit", std::to_string(lshift_bit)}});
+    }
+
+    // right shift
+    if (rshift_bit != 0) {
+      inputs[rnode_idx] = MakeRightShiftNode(inputs[rnode_idx], n->inputs[rnode_idx].node->attrs.name + "_rshift",
+        rvalid_bit, rshift_bit);
     }
 
     NodeEntry out = MakeNode(op_name, n->attrs.name, inputs);
     return out.node;
+
+
+    // // TODO: here is essential
+    // if (gap_bit <= (storage_bit - 1)) {
+    //   inputs[lnode_idx] = MakeNode("left_shift", n->inputs[lnode_idx].node->attrs.name + "_lshift",
+    //     {inputs[lnode_idx]}, {{"bit", std::to_string(gap_bit)}});
+    //   out_repr_bit->at(0) = rrepr_bit;
+    // } else {
+    //   CHECK(gap_bit < 31);
+    //   inputs[rnode_idx] = MakeRightShiftNode(inputs[rnode_idx], n->inputs[rnode_idx].node->attrs.name + "_rshift", rvalid_bit, gap_bit);
+    //   out_repr_bit->at(0) = lrepr_bit;
+    // }
+
+    // NodeEntry out = MakeNode(op_name, n->attrs.name, inputs);
+    // return out.node;
   };
 }
 
@@ -642,8 +655,10 @@ NNVM_REGISTER_OP(conv2d)
     const auto& e = n->inputs[i];
     int in_repr_bit = repr_bit_map[idx.entry_id(idx[nid].inputs[i])];
 
-    if (e.node->is_variable()) {
-      inputs.push_back(n->inputs[i]);
+    if (e.node->op()->name == "quantize") {
+      NodeEntry cast = MakeNode("cast", node_name + "_cast_i16",
+        {e}, {{"dtype", "int16"}});
+      inputs.push_back(cast);
       repr_bit += in_repr_bit;
     } else {
       int scale_bit = scale_map[idx.entry_id(idx[nid].inputs[i])];
@@ -652,10 +667,14 @@ NNVM_REGISTER_OP(conv2d)
 
       if (shift_bit > 0) {
         NodeEntry shift = MakeRightShiftNode(e, node_name, valid_bit, shift_bit);
-        inputs.push_back(shift);
+        NodeEntry cast = MakeNode("cast", node_name + "_cast_i16",
+          {shift}, {{"dtype", "int16"}});
+        inputs.push_back(cast);
         repr_bit += scale_bit - (storage_bit - 1);
       } else {
-        inputs.push_back(n->inputs[i]);
+        NodeEntry cast = MakeNode("cast", node_name + "_cast_i16",
+          {e}, {{"dtype", "int16"}});
+        inputs.push_back(cast);
         repr_bit += in_repr_bit;
       }
     }
