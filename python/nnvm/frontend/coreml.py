@@ -1,46 +1,14 @@
 # pylint: disable=invalid-name, unused-argument
 """CoreML frontend."""
 from __future__ import absolute_import as _abs
-import tvm
 import numpy as np
+
+import tvm
 from .. import symbol as _sym
+from .common import SymbolTable
 
 __all__ = ['from_coreml']
 
-
-class SymbolTable(object):
-    """Table storing symbols by names."""
-    def __init__(self):
-        self.vars = {}
-        self.params = {}
-        self.const_ctr = 1
-        self.in_padding = False
-        self.paddings = [0, 0]
-
-    def new_const(self, value):
-        name = "_param_%d" % (self.const_ctr)
-        self.const_ctr += 1
-        self.params[name] = value
-        self.vars[name] = _sym.Variable(name=name)
-        return self.vars[name]
-
-    def get_var(self, name, must_contain=True):
-        if must_contain:
-            assert name in self.vars
-        if name not in self.vars:
-            self.vars[name] = _sym.Variable(name=name)
-        return self.vars[name]
-
-    def set_var(self, name, sym):
-        assert isinstance(sym, _sym.Symbol)
-        self.vars[name] = sym
-
-    def set_padding(self, paddings):
-        self.paddings = paddings
-        self.in_padding = True
-
-    def clear_padding(self):
-        self.in_padding = False
 
 def NeuralNetworkImageScaler(op, insym, symtab):
     # this changes the symbol
@@ -110,6 +78,7 @@ def ConvolutionLayerParams(op, insym, symtab):
     return ret
 
 def BatchnormLayerParams(op, insym, symtab):
+    """Get layer of batchnorm parameter"""
     # this changes the symbol
     if op.instanceNormalization:
         raise NotImplementedError("instance normalization not implemented")
@@ -122,6 +91,7 @@ def BatchnormLayerParams(op, insym, symtab):
         return _sym.batch_norm(data=insym, **params)
 
 def ActivationParams(op, insym, symtab):
+    """Get activation parameters"""
     whichActivation = op.WhichOneof('NonlinearityType')
     par = getattr(op, whichActivation)
     if whichActivation == 'linear':
@@ -162,6 +132,8 @@ def ActivationParams(op, insym, symtab):
         betasym = symtab.new_const(beta)
         return _sym.broadcast_mul(_sym.log(_sym.broadcast_add(
             _sym.exp(insym), betasym)), alphasym)
+    else:
+        raise NotImplementedError('%s not implemented' % whichActivation)
 
 def ScaleLayerParams(op, insym, symtab):
     """Scale layer params."""
@@ -177,6 +149,7 @@ def ScaleLayerParams(op, insym, symtab):
     return ret
 
 def PoolingLayerParams(op, insym, symtab):
+    """get pooling parameters"""
     if op.globalPooling:
         if op.type == 0:
             return _sym.global_max_pool2d(insym)
@@ -269,6 +242,11 @@ def PaddingLayerParams(op, insym, symtab):
         raise NotImplementedError("Only constant padding is supported now.")
     return insym
 
+def PermuteLayerParams(op, insym, symtab):
+    axes = tuple(op.axis)
+    return _sym.transpose(insym, axes=axes)
+
+
 _convert_map = {
     'NeuralNetworkMeanImage': NeuralNetworkMeanImage,
     'NeuralNetworkImageScaler': NeuralNetworkImageScaler,
@@ -283,6 +261,7 @@ _convert_map = {
     'FlattenLayerParams':FlattenLayerParams,
     'ConcatLayerParams':ConcatLayerParams,
     'PaddingLayerParams':PaddingLayerParams,
+    'PermuteLayerParams':PermuteLayerParams,
 }
 
 def coreml_op_to_nnvm(op, inname, outname, symtab):
@@ -319,12 +298,6 @@ def from_coreml(model):
     ----------
     model:
         coremltools.models.MLModel of a NeuralNetworkClassifier
-
-    arg_params : dict of str to mx.NDArray
-        The argument parameters in mxnet
-
-    aux_params : dict of str to mx.NDArray
-        The auxiliary parameters in mxnet
 
     Returns
     -------

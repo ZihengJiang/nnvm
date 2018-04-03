@@ -101,6 +101,21 @@ struct LeakyReLUParam : public dmlc::Parameter<LeakyReLUParam> {
   }
 };
 
+
+struct PadParam : public dmlc::Parameter<PadParam> {
+  float pad_value;
+  Tuple<Tuple<int> > pad_width;
+
+  DMLC_DECLARE_PARAMETER(PadParam) {
+    DMLC_DECLARE_FIELD(pad_value).set_default(0.0)
+      .describe("The value to be padded.");
+    DMLC_DECLARE_FIELD(pad_width)
+      .describe("Number of values padded to the edges of each axis, "
+                "in the format of ((before_1, after_1), ... (before_N, after_N))");
+  }
+};
+
+
 struct Conv2DParam : public dmlc::Parameter<Conv2DParam> {
   int channels;
   TShape kernel_size;
@@ -231,6 +246,24 @@ struct GlobalPool2DParam : public dmlc::Parameter<GlobalPool2DParam> {
   int layout;
 
   DMLC_DECLARE_PARAMETER(GlobalPool2DParam) {
+    DMLC_DECLARE_FIELD(layout)
+      .add_enum("NCHW", kNCHW)
+      .add_enum("NHWC", kNHWC)
+      .set_default(kNCHW)
+      .describe("Dimension ordering of data and weight. Can be 'NCHW', 'NHWC', etc."
+                "'N', 'C', 'H', 'W' stands for batch, channel, height, and width"
+                "dimensions respectively. Convolution is applied on the 'H' and"
+                "'W' dimensions.");
+  }
+};
+
+struct UpSamplingParam : public dmlc::Parameter<UpSamplingParam> {
+  int scale;
+  int layout;
+
+  DMLC_DECLARE_PARAMETER(UpSamplingParam) {
+    DMLC_DECLARE_FIELD(scale)
+      .describe("upsampling scaling factor");
     DMLC_DECLARE_FIELD(layout)
       .add_enum("NCHW", kNCHW)
       .add_enum("NHWC", kNHWC)

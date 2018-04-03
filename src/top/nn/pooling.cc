@@ -6,13 +6,18 @@
 #include <nnvm/op.h>
 #include <nnvm/node.h>
 #include <nnvm/op_attr_types.h>
+#include <nnvm/compiler/op_attr_types.h>
+#include <nnvm/compiler/util.h>
 #include <nnvm/top/nn.h>
 #include "./nn_common.h"
 #include "../op_common.h"
 #include "../elemwise_op_common.h"
+#include "topi/nn/pooling.h"
 
 namespace nnvm {
 namespace top {
+using namespace tvm;
+using namespace nnvm::compiler;
 
 DMLC_REGISTER_PARAMETER(Pool2DParam);
 
@@ -77,7 +82,44 @@ NNVM_REGISTER_OP(max_pool2d)
 .set_num_inputs(1)
 .set_attr<FInferShape>("FInferShape", Pool2DInferShape)
 .set_attr<FInferType>("FInferType", ElemwiseType<1, 1>)
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    const Pool2DParam& param = nnvm::get<Pool2DParam>(attrs.parsed);
+    auto pool_size = ShapeToArray(param.pool_size);
+    auto strides = ShapeToArray(param.strides);
+    auto padding = ShapeToArray(param.padding);
+    auto ceil_mode = param.ceil_mode;
+    CHECK(param.layout == kNCHW || param.layout == kNHWC) << "Unsupported layout";
+    std::string layout = (param.layout == kNCHW ? "NCHW" : "NHWC");
+    return Array<Tensor>{
+      topi::nn::pool(inputs[0], pool_size, strides, padding, \
+                     topi::nn::kMaxPool, ceil_mode, layout) };
+})
+.set_attr<FGradient>(
+  "FGradient", [](const NodePtr& n,
+                  const std::vector<NodeEntry>& ograds) {
+    return MakeGradNode("_max_pool2d_grad", n,
+                        {ograds[0], n->inputs[0], NodeEntry{n, 0, 0}},
+                        n->attrs.dict);
+})
 .set_support_level(2);
+
+NNVM_REGISTER_OP(_max_pool2d_grad)
+  .describe(R"code(Max pooling 2D grad.
+
+)code" NNVM_ADD_FILELINE)
+.add_argument("ograd", "4D Tensor", "Output grad.")
+.add_argument("input", "4D Tensor", "Input data of max_pool2d grad.")
+.add_argument("output", "4D Tensor", "Output data of max_pool2d grad.")
+.set_num_inputs(3)
+.set_num_outputs(1)
+.set_attr_parser(ParamParser<Pool2DParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<Pool2DParam>)
+.set_attr<FInferShape>("FInferShape", AssignOutputAttr<TShape, 1, 0>)
+.set_attr<FInferType>("FInferType", ElemwiseType<3, 1>)
+.set_attr<TIsBackward>("TIsBackward", true);
 
 
 NNVM_REGISTER_OP(avg_pool2d)
@@ -102,6 +144,21 @@ NNVM_REGISTER_OP(avg_pool2d)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<Pool2DParam>)
 .set_attr<FInferShape>("FInferShape", Pool2DInferShape)
 .set_attr<FInferType>("FInferType", ElemwiseType<1, 1>)
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    const Pool2DParam& param = nnvm::get<Pool2DParam>(attrs.parsed);
+    auto pool_size = ShapeToArray(param.pool_size);
+    auto strides = ShapeToArray(param.strides);
+    auto padding = ShapeToArray(param.padding);
+    auto ceil_mode = param.ceil_mode;
+    CHECK(param.layout == kNCHW || param.layout == kNHWC) << "Unsupported layout";
+    std::string layout = (param.layout == kNCHW ? "NCHW" : "NHWC");
+    return Array<Tensor>{
+      topi::nn::pool(inputs[0], pool_size, strides, padding, \
+                     topi::nn::kAvgPool, ceil_mode, layout) };
+})
 .set_num_outputs(1)
 .set_num_inputs(1)
 .set_support_level(2);
@@ -140,6 +197,16 @@ NNVM_REGISTER_OP(global_max_pool2d)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<GlobalPool2DParam>)
 .set_attr<FInferShape>("FInferShape", GlobalPool2DInferShape)
 .set_attr<FInferType>("FInferType", ElemwiseType<1, 1>)
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    const GlobalPool2DParam& param = nnvm::get<GlobalPool2DParam>(attrs.parsed);
+    CHECK_EQ(param.layout, kNCHW)
+      << "global_max_pool2d currently only supports NCHW layout";
+    return Array<Tensor>{
+      topi::nn::global_pool(inputs[0], topi::nn::kMaxPool) };
+})
 .set_num_outputs(1)
 .set_num_inputs(1)
 .set_support_level(2);
@@ -160,6 +227,16 @@ NNVM_REGISTER_OP(global_avg_pool2d)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<GlobalPool2DParam>)
 .set_attr<FInferShape>("FInferShape", GlobalPool2DInferShape)
 .set_attr<FInferType>("FInferType", ElemwiseType<1, 1>)
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    const GlobalPool2DParam& param = nnvm::get<GlobalPool2DParam>(attrs.parsed);
+    CHECK_EQ(param.layout, kNCHW)
+      << "global_avg_pool2d currently only supports NCHW layout";
+    return Array<Tensor>{
+      topi::nn::global_pool(inputs[0], topi::nn::kAvgPool) };
+})
 .set_num_outputs(1)
 .set_num_inputs(1)
 .set_support_level(2);

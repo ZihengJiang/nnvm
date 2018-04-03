@@ -6,13 +6,19 @@
 #include <nnvm/op.h>
 #include <nnvm/node.h>
 #include <nnvm/op_attr_types.h>
+#include <nnvm/compiler/op_attr_types.h>
+#include <nnvm/compiler/util.h>
 #include <nnvm/top/tensor.h>
 #include <cctype>
 #include "../op_common.h"
 #include "../elemwise_op_common.h"
+#include "topi/nn/flatten.h"
+#include "topi/transform.h"
 
 namespace nnvm {
 namespace top {
+using namespace tvm;
+using namespace nnvm::compiler;
 
 // flatten
 inline bool FlattenInferShape(const NodeAttrs& attrs,
@@ -44,7 +50,7 @@ Example::
         [4,5,6],
         [7,8,9]
     ],
-    [    [1,2,3],
+    [   [1,2,3],
         [4,5,6],
         [7,8,9]
     ]],
@@ -58,6 +64,18 @@ Example::
 .set_attr<FInferShape>("FInferShape", FlattenInferShape)
 .set_attr<FInferType>("FInferType", ElemwiseType<1, 1>)
 .add_argument("data", "Tensor", "Input data.")
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    return Array<Tensor>{ topi::nn::flatten(inputs[0]) };
+})
+.set_attr<FGradient>(
+  "FGradient", [](const NodePtr& n,
+                  const std::vector<NodeEntry>& ograds){
+    return MakeGradNode("reshape_like", n,
+                        {ograds[0], n->inputs[0]});
+})
 .set_support_level(1);
 
 // concatenate
@@ -138,6 +156,13 @@ Example::
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<ConcatenateParam>)
 .set_attr<FInferShape>("FInferShape", ConcatenateInferShape)
 .set_attr<FInferType>("FInferType", ElemwiseType<-1, 1>)
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    const ConcatenateParam& param = nnvm::get<ConcatenateParam>(attrs.parsed);
+    return Array<Tensor>{ topi::concatenate(inputs, param.axis) };
+})
 .set_num_outputs(1)
 .set_num_inputs(kVarg)
 .set_support_level(1);
@@ -172,8 +197,8 @@ inline bool ExpandDimsInferShape(const NodeAttrs& attrs,
 NNVM_REGISTER_OP(expand_dims)
 .describe(R"code(Inserts a new axis of size 1 into the array shape
 
-For example, given ``x`` with shape ``(2,3,4)``, then ``expand_dims(x, axis=1)``
-will return a new array with shape ``(2,1,3,4)``.
+For example, given ``x`` with shape ``(2,3,4)``, then ``expand_dims(x, axis=1, num_newaxis=5)``
+will return a new array with shape ``(2,5,3,4)``.
 
 )code" NNVM_ADD_FILELINE)
 .add_argument("data", "Tensor", "Input tensor")
@@ -184,7 +209,64 @@ will return a new array with shape ``(2,1,3,4)``.
 .set_attr<FInferType>("FInferType", ElemwiseType<1, 1>)
 .set_num_inputs(1)
 .set_num_outputs(1)
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    const ExpandDimsParam& param = nnvm::get<ExpandDimsParam>(attrs.parsed);
+    return Array<Tensor>{ topi::expand_dims(inputs[0], param.axis, param.num_newaxis) };
+})
+.set_attr<FGradient>(
+  "FGradient", [](const NodePtr& n,
+                  const std::vector<NodeEntry>& ograds){
+    const ExpandDimsParam& param = nnvm::get<ExpandDimsParam>(n->attrs.parsed);
+    return std::vector<NodeEntry> {
+      MakeNode("sum", n->attrs.name + "_grad", {ograds[0]},
+               {{"axis", std::to_string(param.axis)}})
+    };
+})
 .set_support_level(1);
+
+NNVM_REGISTER_OP(expand_like)
+  .describe(R"code(Expand an input array with the shape of second array.
+This operation can always be composed of unsqueezing and expanding dims.
+Examples::
+  input = [ 12.  19.  27.]
+  input.shape = (3,)
+  new_shape_array = [[[1,2],[2,3],[1,3]],
+                     [[1,4],[4,3],[5,2]],
+                     [[7,1],[7,2],[7,3]]]
+  new_shape_array.shape = (3, 3, 2)
+  expand_like(input, [1,2], new_shape_array) =
+                    [[[12,12],[12,12],[12,12]],
+                     [[19,19],[19,19],[19,19]],
+                     [[27,27],[27,27],[27,27]]]
+)code" NNVM_ADD_FILELINE)
+.add_argument("input", "Tensor", "Source input")
+.add_argument("shape_like", "Tensor", "Input with new shape")
+.add_arguments(IndicatorParam::__FIELDS__())
+.set_attr_parser(ParamParser<IndicatorParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<IndicatorParam>)
+.set_attr<nnvm::FInferShape>("FInferShape", AssignOutputAttr<TShape, 1, 0>)
+.set_attr<nnvm::FInferType>("FInferType", ElemwiseType<2, 1>)
+.set_num_inputs(2)
+.set_num_outputs(1)
+.set_attr<FGradient>(
+  "FGradient", [](const NodePtr& n,
+                  const std::vector<NodeEntry>& ograds) {
+    const IndicatorParam& param = nnvm::get<IndicatorParam>(n->attrs.parsed);
+    std::ostringstream axis;
+    axis << param.axis;
+
+    return std::vector<NodeEntry>{
+      MakeNode("sum", n->attrs.name + "_grad",
+               {ograds[0]},
+               {{"axis", axis.str()},
+                {"exclude", std::to_string(param.exclude)}}),
+      MakeNode("zeros_like", n->attrs.name + "_zero_grad", {n->inputs[1]})
+    };
+  })
+  .set_support_level(4);
 
 // split
 DMLC_REGISTER_PARAMETER(SplitParam);
@@ -265,6 +347,22 @@ along which to split the array.
 .set_attr<FInferType>("FInferType", ElemwiseType<1, -1>)
 .set_num_inputs(1)
 .set_num_outputs(SplitNumOutputs)
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    const SplitParam& param = nnvm::get<SplitParam>(attrs.parsed);
+    if (param.equal_split) {
+      return Array<Tensor>{
+        topi::split_sections(inputs[0], param.indices_or_sections[0], param.axis) };
+    } else {
+      Array<Expr> indices;
+      for (auto i : param.indices_or_sections) {
+        indices.push_back(tvm::make_const(tvm::Int(32), i));
+      }
+      return Array<Tensor>{ topi::split(inputs[0], indices, param.axis) };
+    }
+})
 .set_support_level(1);
 
 // cast
@@ -383,7 +481,7 @@ NNVM_REGISTER_OP(reshape)
 .describe(R"code(Reshapes the input array.
 
 Given an array and a shape, this function returns a copy of the array in the new shape.
-The shape is a tuple of integers such as (2,3,4).The size of the new shape should be same as the size of the input array.
+The shape is a tuple of integers such as (2,3,4). The size of the new shape should be same as the size of the input array.
 
 Example::
 
@@ -443,7 +541,52 @@ The significance of each is explained below:
 .set_attr<FInferType>("FInferType", ElemwiseType<1, 1>)
 .set_num_inputs(1)
 .set_num_outputs(1)
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    return Array<Tensor>{ topi::reshape(inputs[0], out_info[0]->shape) };
+})
+.set_attr<FGradient>(
+  "FGradient", [](const NodePtr& n,
+                  const std::vector<NodeEntry>& ograds) {
+    return std::vector<NodeEntry>{
+      MakeNode("reshape_like", n->attrs.name + "_grad",
+               {ograds[0], n->inputs[0]})
+    };
+})
 .set_support_level(3);
+
+NNVM_REGISTER_OP(reshape_like)
+  .describe(R"code(Reshapes the input array by the size of another array.
+For an input array with shape ``(d1, d2, ..., dk)``, `reshape_like` operation reshapes
+the input array into an output array with the same shape as the second input array.
+.. note::
+    Sizes for both array should be compatible.
+)code" NNVM_ADD_FILELINE)
+.add_argument("data", "Tensor", "Input data.")
+.add_argument("shape_like", "Tensor", "Input data.")
+.set_num_inputs(2)
+.set_num_outputs(1)
+.set_attr<FInferShape>(
+  "FInferShape", [](const NodeAttrs& attrs,
+                    std::vector<TShape>* in_attrs,
+                    std::vector<TShape>* out_attrs) {
+    CHECK_EQ(in_attrs->at(0).Size(), in_attrs->at(1).Size())
+      << "Reshape inputs size should be compatible";
+    NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_attrs, 0, in_attrs->at(1));
+    return true;
+})
+.set_attr<FInferType>("FInferType", ElemwiseType<2, 1>)
+.set_attr<FGradient>(
+  "FGradient", [](const NodePtr& n,
+                  const std::vector<NodeEntry>& ograds) {
+    return std::vector<NodeEntry>{
+      MakeNode("reshape_like", n->attrs.name + "_grad", {ograds[0], n->inputs[0]}),
+      MakeNode("zeros_like", n->attrs.name + "_zero_grad", { n->inputs[1]})
+    };
+})
+.set_support_level(4);
 
 // squeeze
 DMLC_REGISTER_PARAMETER(SqueezeParam);
@@ -502,12 +645,14 @@ NNVM_REGISTER_OP(squeeze)
 Examples::
 
   x = [[[0], [1], [2]]]
+  x.shape = (1, 3, 1)
 
   squeeze(x) = [0, 1, 2]
 
   squeeze(x, 0) = [[0], [1], [2]]
 
   squeeze(x, (0, 2)) = [0, 1, 2]
+
 )code" NNVM_ADD_FILELINE)
 .add_argument("data", "Tensor", "Source input")
 .add_arguments(SqueezeParam::__FIELDS__())
@@ -517,6 +662,22 @@ Examples::
 .set_attr<nnvm::FInferType>("FInferType", ElemwiseType<1, 1>)
 .set_num_inputs(1)
 .set_num_outputs(1)
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    const SqueezeParam& param = nnvm::get<SqueezeParam>(attrs.parsed);
+    auto axis = ShapeToArray(param.axis);
+    return Array<Tensor>{ topi::squeeze(inputs[0], axis) };
+})
+.set_attr<FGradient>(
+  "FGradient", [](const NodePtr& n,
+                  const std::vector<NodeEntry>& ograds) {
+    return std::vector<NodeEntry>{
+      MakeNode("reshape_like", n->attrs.name + "_grad",
+               {ograds[0], n->inputs[0]})
+    };
+})
 .set_support_level(1);
 
 // tranpose
@@ -584,7 +745,24 @@ Examples::
 .set_attr<nnvm::FInferType>("FInferType", ElemwiseType<1, 1>)
 .set_num_inputs(1)
 .set_num_outputs(1)
-.set_support_level(4);
+.set_support_level(4)
+.set_attr<FTVMCompute>(
+  "FTVMCompute", [](const NodeAttrs& attrs,
+                    const Array<Tensor>& inputs,
+                    const Array<Tensor>& out_info) {
+    const TransposeParam& param = nnvm::get<TransposeParam>(attrs.parsed);
+    auto axes = ShapeToArray(param.axes);
+    return Array<Tensor>{ topi::transpose(inputs[0], axes) };
+})
+.set_attr<FGradient>(
+  "FGradient", [](const NodePtr& n,
+                  const std::vector<NodeEntry>& ograds) {
+    const TransposeParam& param = nnvm::get<TransposeParam>(n->attrs.parsed);
+    std::ostringstream oss; oss << param.axes;
+    return std::vector<NodeEntry>{
+      MakeNode("transpose", n->attrs.name + "_t", {ograds[0]}, {{"axes", oss.str()}})
+    };
+});
 
 }  // namespace top
 }  // namespace nnvm

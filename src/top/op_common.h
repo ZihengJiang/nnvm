@@ -8,6 +8,7 @@
 
 #include <dmlc/logging.h>
 #include <dmlc/parameter.h>
+#include <nnvm/top/tensor.h>
 #include <string>
 #include <vector>
 #include <unordered_set>
@@ -16,7 +17,7 @@ namespace nnvm {
 namespace top {
 /*!
  * \brief Parse keyword arguments as PType arguments and save to parsed
- * \tparam PType the arameter type.
+ * \tparam PType the parameter type.
  * \param attrs The attributes.
  */
 template<typename PType>
@@ -143,7 +144,7 @@ inline std::string attr_assign_error_msg(const NodeAttrs& attrs,
 }
 
 /*!
- * \brief macro assign shape to out if out is unknown otherwise check consistency
+ * \brief macro assign shape to input if out is unknown otherwise check consistency
  *  Use macro so we can see the error file more clearly
  * \param inputs the shape array to store the result
  * \param index the index of in the array
@@ -202,6 +203,28 @@ inline std::string attr_assign_error_msg(const NodeAttrs& attrs,
     }                                                                    \
   }
 
+/*!
+ * \brief macro assign rhs shape to lhs
+ *  Use macro so we can see the error file more clearly
+ * \param lhs lhs shape
+ * \param rhs rhs shape
+ */
+#define SHAPE_ASSIGN(lhs, rhs)                                \
+  if ((lhs).ndim() == 0) (lhs) = (rhs);                       \
+  else                                                        \
+    CHECK_EQ(lhs, rhs) << "shape inference inconsistent";     \
+
+/*!
+ * \brief macro assign rhs type to lhs
+ *  Use macro so we can see the error file more clearly
+ * \param lhs lhs type
+ * \param rhs rhs type
+ */
+#define DTYPE_ASSIGN(lhs, rhs)                                \
+  if ((lhs) == -1) (lhs) = (rhs);                             \
+  else                                                        \
+    CHECK_EQ(lhs, rhs) << "type inference inconsistent";     \
+
 // simply return the shape as same
 inline bool SameShape(const NodeAttrs& attrs,
                       std::vector<TShape> *ishape,
@@ -215,6 +238,77 @@ inline bool SameShape(const NodeAttrs& attrs,
   }
   return true;
 }
+
+// return shape from node attrs
+template<typename PType>
+inline bool ZeroShape(const NodeAttrs& attrs,
+                      std::vector<TShape> *ishape,
+                      std::vector<TShape> *oshape) {
+  const TShape& ts = dmlc::get<PType>(attrs.parsed).shape;
+  if (ts.ndim() != 0) {
+    SHAPE_ASSIGN(oshape->at(0), ts);
+    return true;
+  } else {
+    return false;
+  }
+}
+
+// simply assign output shape or type from input
+template<typename AttrType, int in_index, int out_index>
+inline bool AssignOutputAttr(const NodeAttrs& attrs,
+                              std::vector<AttrType> *in_attrs,
+                              std::vector<AttrType> *out_attrs) {
+  CHECK_LT(in_index, in_attrs->size());
+  CHECK_LT(out_index, out_attrs->size());
+  const TShape &dshape = in_attrs->at(in_index);
+  NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_attrs, out_index, dshape);
+  return true;
+}
+
+// return type from node attrs
+template<typename PType>
+inline bool ZeroType(const NodeAttrs& attrs,
+                     std::vector<int> *iattr,
+                     std::vector<int> *oattr) {
+  int dtype = dmlc::get<PType>(attrs.parsed).dtype;
+  DTYPE_ASSIGN(oattr->at(0), dtype);
+  return true;
+}
+
+// Make zero grad node
+inline std::vector<NodeEntry> MakeZeroGradNodes(
+  const NodePtr& n,
+  const std::vector<NodeEntry>& ograds) {
+  std::vector<NodeEntry> ret;
+  for (uint32_t i = 0; i < n->num_inputs(); ++i) {
+    std::ostringstream os;
+    ret.push_back(MakeNode("zeros_like", n->attrs.name + "_zero_grad",
+                           {n->inputs[i]}));
+  }
+  return ret;
+}
+
+// Helper to make gradient node
+inline std::vector<NodeEntry> MakeGradNode(
+  const char* op_name,
+  const NodePtr& n,
+  std::vector<NodeEntry> inputs,
+  std::unordered_map<std::string, std::string> attr = {{}}) {
+  NodePtr p = Node::Create();
+  p->attrs.op = nnvm::Op::Get(op_name);
+  p->attrs.name = n->attrs.name + "_grad";
+  p->inputs = std::move(inputs);
+  p->attrs.dict = std::move(attr);
+  if (p->attrs.op->attr_parser) {
+    p->attrs.op->attr_parser(&p->attrs);
+  }
+  std::vector<NodeEntry> ret;
+  for (uint32_t i = 0; i < p->num_outputs(); ++i) {
+    ret.emplace_back(NodeEntry{p, i, 0});
+  }
+  return ret;
+}
+
 
 }  // namespace top
 }  // namespace nnvm

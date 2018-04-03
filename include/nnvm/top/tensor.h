@@ -57,7 +57,31 @@ enum TypeFlag {
   kInt8  = 5,
   kInt64 = 6,
   kInt16 = 7,
+  kUint16 = 8,
+  kUint32 = 9,
+  kUint64 = 10,
 };
+
+enum IndicatorRuleFlag {
+  kGT0 = 0,
+  kLT0 = 1,
+  kMax = 2,
+  kMin = 3,
+};
+
+#define DMLC_DECLARE_DTYPE_FIELD(name)                              \
+  DMLC_DECLARE_FIELD(name)                                          \
+  .add_enum("float16", kFloat16)                                    \
+  .add_enum("float32", kFloat32)                                    \
+  .add_enum("float64", kFloat64)                                    \
+  .add_enum("uint8",  kUint8)                                       \
+  .add_enum("uint16", kUint16)                                      \
+  .add_enum("uint32", kUint32)                                      \
+  .add_enum("uint64", kUint64)                                      \
+  .add_enum("int8",  kInt8)                                         \
+  .add_enum("int16", kInt16)                                        \
+  .add_enum("int32", kInt32)                                        \
+  .add_enum("int64", kInt64)
 
 struct CastParam : public dmlc::Parameter<CastParam> {
   int dtype;
@@ -70,6 +94,7 @@ struct CastParam : public dmlc::Parameter<CastParam> {
     .add_enum("int32", kInt32)
     .add_enum("int8", kInt8)
     .add_enum("int16", kInt16)
+    DMLC_DECLARE_DTYPE_FIELD(dtype)
     .describe("Output data type.");
   }
 };
@@ -90,6 +115,28 @@ struct ClipParam : public dmlc::Parameter<ClipParam> {
   }
 };
 
+struct IndicatorParam : public dmlc::Parameter<IndicatorParam> {
+  TShape axis;
+  bool exclude;
+  DMLC_DECLARE_PARAMETER(IndicatorParam) {
+    DMLC_DECLARE_FIELD(axis).set_default(TShape())
+    .describe(R"code(The axis or axes along which to perform the indicator rule.
+
+        The default, `axis=()`, will compute over all elements into a
+        scalar array with shape `(1,)`.
+
+        If `axis` is int, rule is applied on a particular axis.
+
+        If `axis` is a tuple of ints, rule is applied on all the axes
+        specified in the tuple.
+
+        If `exclude` is true, rule will be applied on the axes that are
+        NOT in axis instead.)code");
+    DMLC_DECLARE_FIELD(exclude).set_default(false)
+    .describe("Whether to apply rule on axis that are NOT in axis instead.");
+  }
+};
+
 struct ReshapeParam : public dmlc::Parameter<ReshapeParam> {
   Tuple<int64_t> shape;
 
@@ -103,8 +150,7 @@ struct SqueezeParam : public dmlc::Parameter<SqueezeParam> {
 
   DMLC_DECLARE_PARAMETER(SqueezeParam) {
     DMLC_DECLARE_FIELD(axis).set_default(TShape())
-    .describe("The axis to squeeze in the input tensor."
-              " If set to None, all size=1 axes will be squeezed");
+    .describe("The axis to squeeze in the input tensor.");
   }
 };
 
@@ -113,6 +159,15 @@ struct ScalarParam : public dmlc::Parameter<ScalarParam> {
 
   DMLC_DECLARE_PARAMETER(ScalarParam) {
     DMLC_DECLARE_FIELD(scalar);
+  }
+};
+
+struct FillValueParam : public dmlc::Parameter<FillValueParam> {
+  double fill_value;
+
+  DMLC_DECLARE_PARAMETER(FillValueParam) {
+    DMLC_DECLARE_FIELD(fill_value)
+    .describe("Scalar value to be filled");
   }
 };
 
@@ -161,6 +216,62 @@ struct ReduceParam : public dmlc::Parameter<ReduceParam> {
                 "in the result as dimension with size one.");
     DMLC_DECLARE_FIELD(exclude).set_default(false)
       .describe("Whether to perform reduction on axis that are NOT in axis instead.");
+  }
+};
+
+struct InitOpWithScalarParam : public dmlc::Parameter<InitOpWithScalarParam> {
+  TShape shape;
+  int dtype;
+  double fill_value;
+
+  DMLC_DECLARE_PARAMETER(InitOpWithScalarParam) {
+    DMLC_DECLARE_FIELD(shape).set_default(TShape());
+    DMLC_DECLARE_DTYPE_FIELD(dtype).set_default(kFloat32)
+      .describe("Target data type.");
+    DMLC_DECLARE_FIELD(fill_value).describe("Scalar value to fill");
+  }
+};
+
+struct InitOpParam : public dmlc::Parameter<InitOpParam> {
+  TShape shape;
+  int dtype;
+
+  DMLC_DECLARE_PARAMETER(InitOpParam) {
+    DMLC_DECLARE_FIELD(shape).set_default(TShape());
+    DMLC_DECLARE_DTYPE_FIELD(dtype).set_default(kFloat32)
+      .describe("Target data type.");
+  }
+};
+
+struct ElementWiseReduceParam : public dmlc::Parameter<ElementWiseReduceParam> {
+  int num_args;
+  DMLC_DECLARE_PARAMETER(ElementWiseReduceParam) {
+    DMLC_DECLARE_FIELD(num_args).set_lower_bound(1)
+      .describe("Number of inputs to be reduced.");
+  }
+};
+
+struct MatMulParam : public dmlc::Parameter<MatMulParam> {
+  bool transpose_a;
+  bool transpose_b;
+
+  DMLC_DECLARE_PARAMETER(MatMulParam) {
+    DMLC_DECLARE_FIELD(transpose_a)
+      .describe("If true then transpose the first input before dot.")
+      .set_default(false);
+    DMLC_DECLARE_FIELD(transpose_b)
+      .describe("If true then transpose the second input before dot.")
+      .set_default(false);
+  }
+};
+
+struct ClipParam : public dmlc::Parameter<ClipParam> {
+  double a_min, a_max;
+  DMLC_DECLARE_PARAMETER(ClipParam) {
+    DMLC_DECLARE_FIELD(a_min)
+      .describe("Minimum value such that value smaller then this will be clipped.");
+    DMLC_DECLARE_FIELD(a_max)
+      .describe("Maximum value such that value larger then this will be clipped.");
   }
 };
 

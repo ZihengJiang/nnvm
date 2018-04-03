@@ -11,7 +11,7 @@ include $(config)
 
 export LDFLAGS = -pthread -lm
 export CFLAGS = -std=c++11 -Wall -O2 -Iinclude -fPIC
-CFLAGS += -Itvm/include -Itvm/dlpack/include -Itvm/HalideIR/src
+CFLAGS += -Itvm/include -Itvm/dlpack/include -Itvm/HalideIR/src -Itvm/topi/include
 
 ifdef DMLC_CORE_PATH
   CFLAGS += -I$(DMLC_CORE_PATH)/include
@@ -72,7 +72,7 @@ build/src/%.o: src/%.cc
 
 lib/libnnvm.a: $(ALL_DEP)
 	@mkdir -p $(@D)
-	ar crv $@ $(filter %.o, $?)
+	$(AR) crv $@ $(filter %.o, $?)
 
 lib/libnnvm_compiler.$(SHARED_LIBRARY_SUFFIX): lib/libnnvm.a ${TOP_OBJ}
 	@mkdir -p $(@D)

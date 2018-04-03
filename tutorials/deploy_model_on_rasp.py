@@ -85,8 +85,8 @@ from tvm.contrib import graph_runtime as runtime
 # For demonstration, we simply start an RPC server on the same machine,
 # if :code:`use_rasp` is False. If you have set up the remote
 # environment, please change the three lines below: change the
-# :code:`use_rasp` to True, also change the host and port with your
-# device's host address and port number.
+# :code:`use_rasp` to True, also change the :code:`host` and :code:`port`
+# with your device's host address and port number.
 
 use_rasp = False
 host = 'rasp0'
@@ -95,8 +95,8 @@ port = 9090
 if not use_rasp:
     # run server locally
     host = 'localhost'
-    port = 9090
-    server = rpc.Server(host=host, port=port)
+    port = 9091
+    server = rpc.Server(host=host, port=port, use_popen=True)
 
 ######################################################################
 # Prepare the Pretrained Model
@@ -114,7 +114,7 @@ import numpy as np
 block = get_model('resnet18_v1', pretrained=True)
 
 ######################################################################
-# In order to test our model, here we download a image of cat and
+# In order to test our model, here we download an image of cat and
 # transform its format.
 img_name = 'cat.jpg'
 download('https://github.com/dmlc/mxnet.js/blob/master/data/cat.png?raw=true', img_name)
@@ -177,15 +177,12 @@ out_shape = (batch_size, num_classes)
 # Pi, which has been proved as a good compilation configuration.
 
 if use_rasp:
-    target = "llvm -target=armv7l-none-linux-gnueabihf -mcpu=cortex-a53 -mattr=+neon"
+    target = tvm.target.rasp()
 else:
-    target = "llvm"
+    target = tvm.target.create('llvm')
 
-
-# use `with tvm.target.rasp` for some target-specified optimization
-with tvm.target.rasp():
-    graph, lib, params = nnvm.compiler.build(
-        net, target, shape={"data": data_shape}, params=params)
+graph, lib, params = nnvm.compiler.build(
+    net, target, shape={"data": data_shape}, params=params)
 
 # After `nnvm.compiler.build`, you will get three return values: graph,
 # library and the new parameter, since we do some optimization that will

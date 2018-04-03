@@ -38,6 +38,7 @@ This level enables fully connected multi-layer perceptron.
    nnvm.symbol.elemwise_sub
    nnvm.symbol.elemwise_mul
    nnvm.symbol.elemwise_div
+   nnvm.symbol.elemwise_sum
    nnvm.symbol.flatten
    nnvm.symbol.concatenate
    nnvm.symbol.expand_dims
@@ -47,6 +48,8 @@ This level enables fully connected multi-layer perceptron.
    nnvm.symbol.batch_norm
    nnvm.symbol.softmax
    nnvm.symbol.log_softmax
+   nnvm.symbol.pad
+   nnvm.symbol.block_grad
 
 
 **Level 2: Convolutions**
@@ -96,6 +99,17 @@ This level enables typical convnet models.
    nnvm.symbol.broadcast_sub
    nnvm.symbol.broadcast_mul
    nnvm.symbol.broadcast_div
+   nnvm.symbol.clip
+   nnvm.symbol.greater
+   nnvm.symbol.less
+   nnvm.symbol.expand_like
+   nnvm.symbol.reshape_like
+   nnvm.symbol.full
+   nnvm.symbol.full_like
+   nnvm.symbol.ones
+   nnvm.symbol.ones_like
+   nnvm.symbol.zeros
+   nnvm.symbol.zeros_like
 
 Detailed Definitions
 --------------------
@@ -110,6 +124,7 @@ Detailed Definitions
 .. autofunction:: nnvm.symbol.elemwise_sub
 .. autofunction:: nnvm.symbol.elemwise_mul
 .. autofunction:: nnvm.symbol.elemwise_div
+.. autofunction:: nnvm.symbol.elemwise_sum
 .. autofunction:: nnvm.symbol.flatten
 .. autofunction:: nnvm.symbol.concatenate
 .. autofunction:: nnvm.symbol.expand_dims
@@ -119,7 +134,8 @@ Detailed Definitions
 .. autofunction:: nnvm.symbol.batch_norm
 .. autofunction:: nnvm.symbol.softmax
 .. autofunction:: nnvm.symbol.log_softmax
-
+.. autofunction:: nnvm.symbol.pad
+.. autofunction:: nnvm.symbol.block_grad
 
 .. autofunction:: nnvm.symbol.conv2d
 .. autofunction:: nnvm.symbol.conv2d_transpose
@@ -150,3 +166,14 @@ Detailed Definitions
 .. autofunction:: nnvm.symbol.broadcast_sub
 .. autofunction:: nnvm.symbol.broadcast_mul
 .. autofunction:: nnvm.symbol.broadcast_div
+.. autofunction:: nnvm.symbol.clip
+.. autofunction:: nnvm.symbol.greater
+.. autofunction:: nnvm.symbol.less
+.. autofunction:: nnvm.symbol.expand_like
+.. autofunction:: nnvm.symbol.reshape_like
+.. autofunction:: nnvm.symbol.full
+.. autofunction:: nnvm.symbol.full_like
+.. autofunction:: nnvm.symbol.ones
+.. autofunction:: nnvm.symbol.ones_like
+.. autofunction:: nnvm.symbol.zeros
+.. autofunction:: nnvm.symbol.zeros_like

@@ -23,6 +23,36 @@ def test_dense():
     assert(sdict["fc_bias"][0] == [30])
 
 
+def test_matmul():
+    a = sym.Variable('a', shape=(10, 20))
+    b = sym.Variable('b', shape=(20, 30))
+    c = sym.matmul(a, b, name="matmul")
+    sdict = infer_shape(c)
+    assert(sdict["matmul"][0] == [10, 30])
+    a = sym.Variable('a', shape=(20, 10))
+    c = sym.matmul(a, b, name="matmul", transpose_a=True)
+    sdict = infer_shape(c)
+    assert(sdict["matmul"][0] == [10, 30])
+    b = sym.Variable('b', shape=(30, 20))
+    c = sym.matmul(a, b, name="matmul", transpose_a=True, transpose_b=True)
+    sdict = infer_shape(c)
+    assert(sdict["matmul"][0] == [10, 30])
+    a = sym.Variable('a', shape=(10, 20))
+    c = sym.matmul(a, b, name="matmul", transpose_b=True)
+    sdict = infer_shape(c)
+    assert(sdict["matmul"][0] == [10, 30])
+    a = sym.Variable('a', shape=(10, 20, 30))
+    b = sym.Variable('b', shape=(30, 40, 50))
+    c = sym.matmul(a, b, name="matmul")
+    sdict = infer_shape(c)
+    assert(sdict["matmul"][0] == [10, 20, 40, 50])
+    a = sym.Variable('a', shape=(30, 20, 10))
+    b = sym.Variable('b', shape=(50, 40, 30))
+    c = sym.matmul(a, b, name="matmul", transpose_a=True, transpose_b=True)
+    sdict = infer_shape(c)
+    assert(sdict["matmul"][0] == [10, 20, 40, 50])
+
+
 def test_concatenate():
     x1 = sym.Variable("x", shape=(10, 20))
     x2 = sym.Variable("y", shape=(10, 30))
@@ -62,6 +92,22 @@ def test_batchnorm():
     sdict = infer_shape(y)
     assert(sdict["bn_gamma"][0] == [20])
 
+    x = sym.Variable("x", shape=(10, 20, 30, 40))
+    y = sym.batch_norm(data=x, axis=0, epsilon=2e-5, name='bn')
+    sdict = infer_shape(y)
+    assert(sdict['bn_moving_var'][0] == [10])
+
+    y = sym.batch_norm(data=x, axis=1, epsilon=2e-5, name='bn')
+    sdict = infer_shape(y)
+    assert(sdict['bn_gamma'][0] == [20])
+
+    y = sym.batch_norm(data=x, axis=2, epsilon=2e-5, name='bn')
+    sdict = infer_shape(y)
+    assert(sdict['bn_beta'][0] == [30])
+
+    y = sym.batch_norm(data=x, axis=3, epsilon=2e-5, name='bn')
+    sdict = infer_shape(y)
+    assert(sdict['bn_moving_mean'][0] == [40])
 
 def test_flatten():
     x = sym.Variable("x", shape=(10, 20, 10))
@@ -259,6 +305,7 @@ def test_reduce():
 if __name__ == "__main__":
     test_expand_dims()
     test_dense()
+    test_matmul()
     test_concatenate()
     test_split()
     test_batchnorm()

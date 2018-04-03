@@ -48,7 +48,7 @@ inline bool Conv2DInferShape(const nnvm::NodeAttrs& attrs,
                  param.kernel_size[0],
                  param.kernel_size[1]});
 
-  wshape = ConvertLayout(wshape, kNCHW, param.layout);
+  wshape = ConvertLayout(wshape, kNCHW, param.layout, true);
   wshape[0] *= param.groups;
 
   NNVM_ASSIGN_INPUT_SHAPE(attrs, *in_shape, Conv2DParam::kWeight, wshape);
@@ -120,7 +120,42 @@ a bias vector is created and added to the outputs.
 .set_attr<FInferType>("FInferType", ElemwiseType<-1, 1>)
 .set_num_outputs(1)
 .set_num_inputs(UseBiasNumInputs<Conv2DParam>)
-.set_support_level(2);
+.set_support_level(2)
+.set_attr<FGradient>(
+  "FGradient", [](const NodePtr& n,
+                  const std::vector<NodeEntry>& ograds) {
+    return MakeGradNode("_conv2d_grad", n,
+                        {ograds[0], n->inputs[Conv2DParam::kData],
+                         n->inputs[Conv2DParam::kWeight]},
+                        n->attrs.dict);
+});
+
+NNVM_REGISTER_OP(_conv2d_grad)
+  .describe(R"code(2D convolution grad.
+
+)code" NNVM_ADD_FILELINE)
+.add_argument("ograd", "4D Tensor", "Output grad.")
+.add_argument("data", "4D Tensor", "Input data of conv2d.")
+.add_argument("weight", "4D Tensor", "Input weight.")
+.set_num_inputs(3)
+.set_num_outputs(UseBiasNumInputs<Conv2DParam>)
+.set_attr<FListOutputNames>("FListOutputNames", UseBiasListInputNames<Conv2DParam>)
+.set_attr_parser(ParamParser<Conv2DParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<Conv2DParam>)
+.set_attr<FInferShape>(
+  "FInferShape", [](const nnvm::NodeAttrs& attrs,
+                    std::vector<TShape>* in_attrs,
+                    std::vector<TShape>* out_attrs) {
+    const Conv2DParam& param = nnvm::get<Conv2DParam>(attrs.parsed);
+    NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_attrs, Conv2DParam::kData, in_attrs->at(1));
+    NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_attrs, Conv2DParam::kWeight, in_attrs->at(2));
+    if (param.use_bias) {
+      NNVM_ASSIGN_OUTPUT_SHAPE(attrs, *out_attrs, Conv2DParam::kBias, TShape({param.channels}));
+    }
+    return true;
+})
+.set_attr<FInferType>("FInferType", ElemwiseType<3, -1>)
+.set_attr<TIsBackward>("TIsBackward", true);
 
 
 DMLC_REGISTER_PARAMETER(Conv2DTransposeParam);
@@ -154,7 +189,7 @@ inline bool Conv2DTransposeInferShape(const nnvm::NodeAttrs& attrs,
                  param.channels / param.groups,
                  param.kernel_size[0],
                  param.kernel_size[1]});
-  wshape = ConvertLayout(wshape, kNCHW, param.layout);
+  wshape = ConvertLayout(wshape, kNCHW, param.layout, true);
   NNVM_ASSIGN_INPUT_SHAPE(attrs, *in_shape, Conv2DTransposeParam::kWeight, wshape);
 
   if (param.use_bias) {

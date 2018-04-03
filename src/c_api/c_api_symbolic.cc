@@ -141,6 +141,15 @@ int NNSymbolGetInternals(SymbolHandle symbol,
   API_END_HANDLE_ERROR(delete s);
 }
 
+int NNSymbolGetChildren(SymbolHandle symbol,
+                        SymbolHandle *out) {
+  Symbol *s = new Symbol();
+  API_BEGIN();
+  *s = static_cast<Symbol*>(symbol)->GetChildren();
+  *out = s;
+  API_END_HANDLE_ERROR(delete s);
+}
+
 int NNSymbolFree(SymbolHandle symbol) {
   API_BEGIN();
   delete static_cast<Symbol*>(symbol);
@@ -278,6 +287,14 @@ int NNSymbolListOutputNames(SymbolHandle symbol,
   }
   *out_size = static_cast<nn_uint>(ret->ret_vec_charp.size());
   *out_str_array = dmlc::BeginPtr(ret->ret_vec_charp);
+  API_END();
+}
+
+int NNSymbolGetNumOutputs(SymbolHandle symbol,
+                           nn_uint *output_count) {
+  Symbol *s = static_cast<Symbol*>(symbol);
+  API_BEGIN();
+    *output_count = static_cast<nn_uint>(s->outputs.size());
   API_END();
 }
 

@@ -8,21 +8,15 @@
 #ifndef NNVM_C_API_H_
 #define NNVM_C_API_H_
 
-#ifdef __cplusplus
-#define NNVM_EXTERN_C extern "C"
-#else
-#define NNVM_EXTERN_C
-#endif
-
 /*! \brief NNVM_DLL prefix for windows */
 #ifdef _WIN32
 #ifdef NNVM_EXPORTS
-#define NNVM_DLL NNVM_EXTERN_C __declspec(dllexport)
+#define NNVM_DLL __declspec(dllexport)
 #else
-#define NNVM_DLL NNVM_EXTERN_C __declspec(dllimport)
+#define NNVM_DLL __declspec(dllimport)
 #endif
 #else
-#define NNVM_DLL NNVM_EXTERN_C
+#define NNVM_DLL
 #endif
 
 /*! \brief manually define unsigned int */
@@ -35,6 +29,9 @@ typedef void *SymbolHandle;
 /*! \brief handle to Graph */
 typedef void *GraphHandle;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 /*!
  * \brief Set the last error message needed by C API
  * \param msg The error message to set.
@@ -247,6 +244,17 @@ NNVM_DLL int NNSymbolListInputNames(SymbolHandle symbol,
 NNVM_DLL int NNSymbolListOutputNames(SymbolHandle symbol,
                                      nn_uint *out_size,
                                      const char ***out_str_array);
+
+
+/*!
+ * \brief Supply number of outputs of the symbol.
+ * \param symbol the symbol
+ * \param output_count number of outputs
+ * \return 0 when success, -1 when failure happens
+ */
+NNVM_DLL int NNSymbolGetNumOutputs(SymbolHandle symbol,
+                                    nn_uint *output_count);
+
 /*!
  * \brief Get a symbol that contains all the internals.
  * \param symbol The symbol
@@ -255,6 +263,14 @@ NNVM_DLL int NNSymbolListOutputNames(SymbolHandle symbol,
  */
 NNVM_DLL int NNSymbolGetInternals(SymbolHandle symbol,
                                   SymbolHandle *out);
+/*!
+ * \brief Get a symbol that contains only direct children.
+ * \param symbol The symbol
+ * \param out The output symbol whose outputs are the direct children.
+ * \return 0 when success, -1 when failure happens
+ */
+NNVM_DLL int NNSymbolGetChildren(SymbolHandle symbol,
+                                 SymbolHandle *out);
 /*!
  * \brief Get index-th outputs of the symbol.
  * \param symbol The symbol
@@ -333,7 +349,7 @@ NNVM_DLL int NNGraphSetJSONAttr(GraphHandle handle,
  * \param success Whether the result is contained in out.
  * \return 0 when success, -1 when failure happens
  */
-NNVM_DLL int NNGraphGetJSONAttr(SymbolHandle handle,
+NNVM_DLL int NNGraphGetJSONAttr(GraphHandle handle,
                                 const char* key,
                                 const char** json_out,
                                 int *success);
@@ -364,5 +380,9 @@ NNVM_DLL int NNGraphApplyPasses(GraphHandle src,
                                 nn_uint num_pass,
                                 const char** pass_names,
                                 GraphHandle *dst);
+
+#ifdef __cplusplus
+} /* end extern "C" */
+#endif
 
 #endif  // NNVM_C_API_H_

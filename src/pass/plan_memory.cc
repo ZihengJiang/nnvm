@@ -151,6 +151,7 @@ size_t AllocMemory(const Graph& ret, const IndexedGraph& idx,
                    GraphAllocator* allocator) {
   static auto& finplace_option = Op::GetAttr<FInplaceOption>("FInplaceOption");
   static auto& finplace_identity = Op::GetAttr<FInplaceIdentity>("FInplaceIdentity");
+  static auto& fignore_inputs = Op::GetAttr<FIgnoreInputs>("FIgnoreInputs");
 
   // Get reference
   auto &storage = *storage_ptr;
@@ -189,10 +190,13 @@ size_t AllocMemory(const Graph& ret, const IndexedGraph& idx,
         uint32_t eid_in = idx.entry_id(inode.inputs[kv.first]);
         auto sid_out = storage[eid_out];
         auto sid_in = storage[eid_in];
+        bool ignore_all_inputs = (fignore_inputs.count(inode.source->op()) != 0 &&
+                                  fignore_inputs[inode.source->op()](
+                                      inode.source->attrs).size() == inode.source->num_inputs());
         if (taken[kv.first] == false &&
             sid_out == GraphAllocator::kBadStorageID &&
             sid_in >= 0 &&
-            (storage_ref_count[sid_in] == 1 || identity[ipair]) &&
+            ((storage_ref_count[sid_in] == 1 && !ignore_all_inputs) || identity[ipair]) &&
             entry_ref_count[eid_out] > 0 &&
             shape_vec[eid_out].Size() == shape_vec[eid_in].Size() &&
             dtype_vec[eid_out] == dtype_vec[eid_in]) {
@@ -224,12 +228,12 @@ size_t AllocMemory(const Graph& ret, const IndexedGraph& idx,
     for (auto rit = eids.rbegin(); rit != eids.rend(); ++rit) {
         uint32_t eid = rit->second;
         auto sid = allocator->Request(dev_id, dtype_vec[eid], shape_vec[eid], nid);
-        storage_ref_count[sid] = entry_ref_count[eid];
+        if (sid >= 0) {
+          storage_ref_count[sid] = entry_ref_count[eid];
+        }
         storage[eid] = sid;
     }
-
     // check if certain inputs is ignored.
-    static auto& fignore_inputs = Op::GetAttr<FIgnoreInputs>("FIgnoreInputs");
     std::vector<uint32_t> ignore_inputs;
     if (fignore_inputs.count(inode.source->op()) != 0) {
       ignore_inputs = fignore_inputs[inode.source->op()](inode.source->attrs);
@@ -330,6 +334,7 @@ Graph PlanMemory(Graph ret) {
       AllocMemory(ret, idx, node_range, &storage_vec, &storage_inplace_index,
                   ref_count, &allocator);
     size_t storage_allocated_bytes = allocator.TotalAllocBytes();
+
     // Choose the plan which leads to minimal memory usage
     if (min_allocated_bytes > storage_allocated_bytes) {
       ret.attrs["storage_id"] = std::make_shared<any>(std::move(storage_vec));

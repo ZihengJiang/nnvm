@@ -67,6 +67,13 @@ inline bool BinaryBroadcastShape(const nnvm::NodeAttrs& attrs,
     [](const NodeAttrs& attrs) {                                    \
       return std::vector<std::pair<int, int> >{{0, 0}, {1, 0}};     \
     })                                                              \
+  .set_attr<FTVMCompute>(                                           \
+    "FTVMCompute", [](const NodeAttrs& attrs,                       \
+      const Array<Tensor>& inputs,                                  \
+      const Array<Tensor>& out_info) {                              \
+        return Array<Tensor>{                                       \
+          topi::name(inputs[0], inputs[1]) };                       \
+    })                                                              \
   .add_argument("lhs", "Tensor", "first input")                     \
   .add_argument("rhs", "Tensor", "second input")
 

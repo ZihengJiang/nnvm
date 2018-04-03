@@ -4,9 +4,12 @@ from __future__ import absolute_import as _abs
 
 import logging
 import tvm
+
 from tvm.contrib import graph_runtime
 from . import graph_attr, graph_util
 from .. import graph as _graph
+from .. import symbol as sym
+from .._base import _all_var_init
 
 OPT_PASS_LEVEL = {
     "SimplifyInference": 0,
@@ -101,6 +104,7 @@ def _lower(sch, inputs, func_name, graph):
     try:
         f = tvm.lower(sch, inputs, name=func_name)
         logging.debug("lower function %s", func_name)
+        logging.debug("%s", tvm.lower(sch, inputs, simple_mode=True))
     except Exception:
         msg = traceback.format_exc()
         msg += "Error during compile graph\n"
@@ -112,8 +116,10 @@ def _lower(sch, inputs, func_name, graph):
 
 
 @tvm.register_func("nnvm.compiler.build_target")
-def _build(funcs, target):
-    return tvm.build(funcs, target=target)
+def _build(funcs, target, target_host):
+    if target_host == "":
+        target_host = None
+    return tvm.build(funcs, target=target, target_host=target_host)
 
 
 def _update_shape_dtype(shape, dtype, params):
@@ -161,7 +167,7 @@ def optimize(graph, shape, dtype="float32"):
     return graph
 
 
-def build(graph, target=None, shape=None, dtype="float32", params=None):
+def build(graph, target=None, shape=None, dtype="float32", params=None, target_host=None):
     """Build graph into runtime library.
 
     The build function will optimize the graph and do the compilation.
@@ -185,9 +191,21 @@ def build(graph, target=None, shape=None, dtype="float32", params=None):
         The input types to the graph
 
     params : dict of str to NDArray
-        Input parameetrs to the graph that do not change
+        Input parameters to the graph that do not change
         during inference time. Used for pre-compute
         folding optimization.
+
+    target_host : str or :any:`tvm.target.Target` optional
+        Host compilation target, if target is device.
+        When TVM compiles device specific program such as CUDA,
+        we also need host(CPU) side code to interact with the driver
+        setup the dimensions and parameters correctly.
+        target_host is used to specify the host side codegen target.
+        By default, llvm is used if it is enabled,
+        otherwise a stackvm intepreter is used.
+
+    initialize : bool, optional
+        Whether to initialize variables in global dict _all_var_init.
 
     Returns
     -------
@@ -195,7 +213,7 @@ def build(graph, target=None, shape=None, dtype="float32", params=None):
         The final execution graph.
 
     libmod : tvm.Module
-        The modue that comes with the execution graph
+        The module that comes with the execution graph
 
     params : dict of str to NDArray
         The updated parameters of graph if params is passed.
@@ -218,16 +236,22 @@ def build(graph, target=None, shape=None, dtype="float32", params=None):
     if not isinstance(dtype, str):
         idtype, _ = graph_util.infer_dtype(graph, **dtype)
         dtype.update(zip(graph.index.input_names, idtype))
+    # Initialize all variables specified in _all_var_init
+    init_var = {}
+    if _all_var_init:
+        init_var = initialize_variables(shape, dtype)
     # Apply optimization
     graph = optimize(graph, shape, dtype)
     # Precompute prune
     if params and cfg.pass_enabled("PrecomputePrune"):
         graph, params = precompute_prune(graph, params)
         shape, dtype = _update_shape_dtype(shape, dtype, params)
-    # Operator Fusion and generatiom
+    # Operator Fusion and generation
     graph = graph_attr.set_shape_inputs(graph, shape)
     graph = graph_attr.set_dtype_inputs(graph, dtype)
     graph._set_json_attr("target", str(target), "str")
+    if target_host is not None:
+        graph._set_json_attr("target_host", str(target_host), "str")
     if cfg.pass_enabled("OpFusion"):
         graph._set_json_attr("opt_level", 1, "int")
     else:
@@ -236,6 +260,11 @@ def build(graph, target=None, shape=None, dtype="float32", params=None):
     with target:
         graph = graph.apply("GraphFusePartition").apply("GraphFuseCompile")
     libmod = graph_attr._move_out_module(graph, "module")
+    # Write variable initial values into params
+    if init_var:
+        if params is None:
+            params = {}
+        params.update(init_var)
     return graph, libmod, params
 
 
@@ -265,8 +294,10 @@ def _run_graph(graph, params):
     graph, libmod, _ = build(graph, target, shape, dtype)
     m = graph_runtime.create(graph, libmod, ctx)
     set_input, run, get_output = m["set_input"], m["run"], m["get_output"]
+    kset = set(graph.symbol.list_input_names())
     for k, v in params.items():
-        set_input(k, tvm.nd.array(v))
+        if k in kset:
+            set_input(k, tvm.nd.array(v))
     run()
     out_data = []
     for i, kv in enumerate(zip(oshape, odtype)):
@@ -313,3 +344,45 @@ def precompute_prune(graph, params):
     with tvm.build_config(auto_unroll_max_step=0):
         out_arrs = _run_graph(pre_graph, params)
     return graph, dict(zip(out_names, out_arrs))
+
+
+def initialize_variables(ishape, idtype):
+    """ Initialize variables stored in _all_var_init dictionary.
+
+    Parameters
+    ----------
+    ishape : dict of str to tuple of int
+        The input shape to the graph
+
+    idtype : str or dict of str to str
+        The input types to the graph
+
+    Returns
+    -------
+    init_var : dict of str to tvm.ndarray
+    """
+    symbol_init_dict = {}
+    const_init_dict = {}
+    init_var = {}
+    for key, value in _all_var_init.items():
+        if isinstance(value, sym.Symbol):
+            symbol_init_dict[key] = value
+        else:
+            const_init_dict[key] = tvm.nd.array(value)
+    # Make sure variables are initialized only once.
+    _all_var_init.clear()
+    if symbol_init_dict:
+        # Create dummy params to run initialization graph
+        params = {}
+        for name, shape in ishape.items():
+            dtype = idtype if isinstance(idtype, str) else idtype[name]
+            params[name] = tvm.nd.empty(shape, dtype, ctx=tvm.cpu())
+        init_group_sym = sym.Group(symbol_init_dict.values())
+        graph = _graph.create(init_group_sym)
+        with tvm.build_config(auto_unroll_max_step=0):
+            init_values = _run_graph(graph, params)
+        init_var.update(dict(zip(symbol_init_dict.keys(), init_values)))
+    init_var.update(const_init_dict)
+    for name, data in init_var.items():
+        ishape[name] = data.shape
+    return init_var
