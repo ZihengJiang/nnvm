@@ -77,7 +77,9 @@ def compute_quantize(attrs, inputs, _):
     limit = (pow(2, bit_width - 1) - 1) * repr_value
     cliped_data = topi.clip(data, -limit, limit)
     scaled_data = tvm.compute(data.shape, lambda *i: cliped_data(*i) / repr_value)
-    round_data = stochastic_round(scaled_data, 0)
+    round_data = tvm.compute(data.shape, lambda *i: tvm.select(scaled_data(*i) < 0,
+        - (- scaled_data(*i) + 0.5), scaled_data(*i) + 0.5))
+    # round_data = stochastic_round(scaled_data, 0)
     return topi.cast(round_data, out_dtype)
 
 
@@ -138,6 +140,9 @@ def compute_quantized_conv2d(attrs, inputs, _):
     return out
 
 @reg.register_schedule("quantized_conv2d")
-def schedule_quantized_conv2d(_, outs, target):
+def schedule_quantized_conv2d(attrs, outs, target):
+    groups = attrs.get_int("groups")
     with tvm.target.create(target):
-        return topi.generic.schedule_conv2d_nchw(outs)
+        if groups == 1:
+            return topi.generic.schedule_conv2d_nchw(outs)
+        return topi.generic.schedule_depthwise_conv2d_nchw(outs)

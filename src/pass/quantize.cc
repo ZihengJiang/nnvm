@@ -20,13 +20,10 @@ namespace {
 
 using compiler::FQuantize;
 
-static constexpr int storage_bit = 8;
-// input bit, weight bit, act bit
-
 inline NodeEntry MakeQuantizeNode(NodeEntry e, int repr_bit) {
   std::string name = e.node->attrs.name;
   NodeEntry quantize = MakeNode("quantize", name + "_quantize",
-    {e}, {{"repr_bit", std::to_string(repr_bit)}, {"out_type", "int8"}});
+    {e}, {{"repr_bit", std::to_string(repr_bit)}, {"out_type", compiler::storage_type}});
   return quantize;
 }
 
@@ -59,7 +56,7 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
             n->inputs[i] = quantized_var.at(e.node.get());
           } else {
             int k = base2_range[idx.entry_id(e)];
-            int repr_bit = k - (storage_bit - 1);
+            int repr_bit = k - (compiler::input_bit - 1);
             repr_bit_map[idx.entry_id(e)] = repr_bit;
             NodeEntry quantize = MakeQuantizeNode(e, repr_bit);
             quantized_var.emplace(e.node.get(), quantize);

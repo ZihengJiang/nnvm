@@ -94,6 +94,16 @@ using FTVMLayoutRequest = std::function<bool (const NodeAttrs& attrs,
  */
 using FTVMVectorizedOp = std::function<nnvm::NodePtr (const nnvm::Node* node)>;
 
+
+// physical storage bit and accumulate bit
+constexpr int storage_bit = 8;
+constexpr int accumulate_bit = 32;
+constexpr const char* storage_type = "int8";
+constexpr const char* accumulate_type = "int32";
+// compression bit number in algorithm within signature bit
+constexpr int input_bit = 8;
+constexpr int output_bit = 32;
+
 using FQuantize = std::function<NodePtr(
     uint32_t nid,
     const NodePtr& n,

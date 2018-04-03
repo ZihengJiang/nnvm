@@ -71,14 +71,6 @@ def compute_cast(attrs, inputs, _):
 reg.register_pattern("cast", OpPattern.ELEMWISE)
 reg.register_schedule("cast", _fschedule_broadcast)
 
-# clip
-@reg.register_compute("clip")
-def compute_clip(attrs, inputs, _):
-    a_min = attrs.get_float("a_min")
-    a_max = attrs.get_float("a_max")
-    return topi.clip(inputs[0], a_min, a_max)
-reg.register_pattern("clip", OpPattern.ELEMWISE)
-reg.register_schedule("clip", _fschedule_broadcast)
 
 # Assign requires special treatment in the compiler
 # The compute and schedule are designed as

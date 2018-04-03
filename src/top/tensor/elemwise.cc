@@ -187,13 +187,6 @@ NNVM_REGISTER_ELEMWISE_UNARY_OP(right_shift)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<ShiftParam>);
 
 
-DMLC_REGISTER_PARAMETER(ClipParam);
-
-NNVM_REGISTER_ELEMWISE_UNARY_OP(clip)
-.add_arguments(ClipParam::__FIELDS__())
-.set_attr_parser(ParamParser<ClipParam>)
-.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<ClipParam>);
-
 // binary ops
 
 NNVM_REGISTER_ELEMWISE_BINARY_OP(elemwise_add)

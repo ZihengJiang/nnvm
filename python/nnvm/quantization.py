@@ -11,6 +11,7 @@ from collections import namedtuple
 
 from . import graph as _graph
 from . import compiler as _compiler
+from .compiler import graph_attr
 from .compiler.graph_util import infer_shape, infer_dtype
 from .compiler.build_module import precompute_prune
 
@@ -42,8 +43,13 @@ def _shape_dtype_dict(inputs, params=None):
 
 def collect_statistics(graph, dataset, params={}):
     ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
+
+    # optimize
     graph = graph.apply('SeparateBias')
-    graph = _compiler.optimize(graph, ishapes, idtypes)
+    graph = graph_attr.set_shape_inputs(graph, ishapes)
+    graph = graph.apply(["InferShape", "SimplifyInference"])
+    graph = graph_attr.set_shape_inputs(graph, ishapes)
+    graph = graph.apply(["InferShape", "FoldScaleAxis"])
     graph, params = precompute_prune(graph, params)
     ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
 
@@ -51,8 +57,8 @@ def collect_statistics(graph, dataset, params={}):
     stats_graph = _collect_internal_outputs(graph);
 
     # build module
-    stats_graph, lib, _ = _compiler.build(stats_graph.symbol, "cuda", ishapes, idtypes)
-    m = graph_runtime.create(stats_graph, lib, tvm.gpu(0))
+    stats_graph, lib, _ = _compiler.build(stats_graph.symbol, "llvm", ishapes, idtypes)
+    m = graph_runtime.create(stats_graph, lib, tvm.cpu(0))
     m.set_input(**params)
 
     # execute and collect stats
@@ -82,11 +88,8 @@ def collect_statistics(graph, dataset, params={}):
         lower_bound = min(entry['min_value'] for entry in records[name])
         upper_bound = max(entry['max_value'] for entry in records[name])
         eps = pow(2, -30)
-        print('lower={}, upper={}'.format(lower_bound, upper_bound))
         k0 = int(math.ceil(math.log(abs(lower_bound) + eps, 2)))
         k1 = int(math.ceil(math.log(abs(upper_bound) + eps, 2)))
-        print("k={}, k0={}, k1={}".format(max(k0, k1), k0, k1))
-        print('')
         base2_range.append(max(k0, k1))
 
     graph._set_json_attr("base2_range", base2_range, "list_int")

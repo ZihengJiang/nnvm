@@ -19,11 +19,14 @@
 namespace nnvm {
 namespace top {
 
-static constexpr int accumulate_bit = 32;
-static constexpr int storage_bit = 16;
-
 using compiler::FQuantize;
 using compiler::FSeparateBias;
+using compiler::storage_type;
+using compiler::accumulate_type;
+using compiler::storage_bit;
+using compiler::accumulate_bit;
+using compiler::input_bit;
+using compiler::output_bit;
 
 inline NodeEntry MakeRightShiftNode(NodeEntry n, const std::string& node_name, int valid_bit, int shift_bit) {
   NodeEntry shift;
@@ -63,6 +66,8 @@ inline FQuantize DefaultQuantize(const char* op_name) {
 
 inline FQuantize AdditionQuantize(const char* op_name) {
   // elemwise_add, broadcast_add
+  // note: left shift and right shift operands to minimize the gap of magnitude
+  // TODO: consider data and weight
   return [=] (uint32_t nid,
               const NodePtr& n,
               const IndexedGraph& idx,
@@ -74,10 +79,9 @@ inline FQuantize AdditionQuantize(const char* op_name) {
     for (size_t i = 0; i < inputs.size(); ++i) {
       if (inputs[i].node->op()->name == "quantize") {
         inputs[i] = MakeNode("cast", inputs[i].node->attrs.name + "_cast",
-          {inputs[i]}, {{"dtype", "int32"}});
+          {inputs[i]}, {{"dtype", accumulate_type}});
       }
     }
-
 
     int arepr_bit = repr_bit_map[idx.entry_id(idx[nid].inputs[0])];
     int brepr_bit = repr_bit_map[idx.entry_id(idx[nid].inputs[1])];
@@ -85,8 +89,8 @@ inline FQuantize AdditionQuantize(const char* op_name) {
     int gap_bit = std::abs(arepr_bit - brepr_bit);
 
     // index of left shift node
-    // when arepr_bit > brepr_bit is true, lnode_idx = 0, lnode is inputs[0];
-    // when arepr_bit > brepr_bit is false,  lnode_idx = 1, lnode is inputs[1];
+    // when arepr_bit > brepr_bit is true, lnode_idx = 0, lshift the lhs;
+    // when arepr_bit > brepr_bit is false,  lnode_idx = 1, lshift the rhs;
     int lnode_idx = 1 - int(arepr_bit > brepr_bit);
     int rnode_idx = 1 - lnode_idx;
 
@@ -98,35 +102,22 @@ inline FQuantize AdditionQuantize(const char* op_name) {
 
     int lvalid_bit = lscale_bit - lrepr_bit;
     int rvalid_bit = rscale_bit - rrepr_bit;
-    LOG(INFO) << "lscale_bit: " << lscale_bit;
-    LOG(INFO) << "lrepr_bit: " << lrepr_bit;
-    LOG(INFO) << "lvalid_bit: " << lvalid_bit;
-
 
     int lshift_bit = 0;
     int rshift_bit = 0;
 
     int lavaliable_bit = (accumulate_bit - 1) - (lvalid_bit);
-
-    if (lavaliable_bit <= 0) {
-      // TODO
-      int bit = 1 - lavaliable_bit;
-      inputs[lnode_idx] = MakeRightShiftNode(inputs[lnode_idx], n->inputs[lnode_idx].node->attrs.name + "_lshift",
-        lvalid_bit, bit);
-      lavaliable_bit = 1;
-      lvalid_bit -= bit;
-      lrepr_bit += bit;
-    }
     CHECK_GE(lavaliable_bit, 1);
 
     if (gap_bit <= (lavaliable_bit - 1)) {  // minus one to avoid overflow
-      // only need to do left shift
+      // only need to do left shift without to sacrifice the precision
+      // take the rshift node as base magnitude
       lshift_bit = gap_bit;
       out_repr_bit->at(0) = rrepr_bit;
     } else {
       // also need to do right shift
       lshift_bit = (lavaliable_bit - 1);
-      rshift_bit = gap_bit - (lavaliable_bit - 1);
+      rshift_bit = gap_bit - lshift_bit;
       CHECK(rshift_bit < 31);
       out_repr_bit->at(0) = rrepr_bit + rshift_bit;
     }
@@ -145,21 +136,6 @@ inline FQuantize AdditionQuantize(const char* op_name) {
 
     NodeEntry out = MakeNode(op_name, n->attrs.name, inputs);
     return out.node;
-
-
-    // // TODO: here is essential
-    // if (gap_bit <= (storage_bit - 1)) {
-    //   inputs[lnode_idx] = MakeNode("left_shift", n->inputs[lnode_idx].node->attrs.name + "_lshift",
-    //     {inputs[lnode_idx]}, {{"bit", std::to_string(gap_bit)}});
-    //   out_repr_bit->at(0) = rrepr_bit;
-    // } else {
-    //   CHECK(gap_bit < 31);
-    //   inputs[rnode_idx] = MakeRightShiftNode(inputs[rnode_idx], n->inputs[rnode_idx].node->attrs.name + "_rshift", rvalid_bit, gap_bit);
-    //   out_repr_bit->at(0) = lrepr_bit;
-    // }
-
-    // NodeEntry out = MakeNode(op_name, n->attrs.name, inputs);
-    // return out.node;
   };
 }
 
@@ -179,13 +155,14 @@ inline FQuantize MultiplicationQuantize(const char* op_name) {
     std::string lname = lhs.node->attrs.name;
     std::string rname = rhs.node->attrs.name;
 
+    // unify the data type to accumulate_type
     if (lhs.node->op()->name == "quantize") {
       lhs = MakeNode("cast", lname + "_cast",
-        {lhs}, {{"dtype", "int32"}});
+        {lhs}, {{"dtype", accumulate_type}});
     }
     if (rhs.node->op()->name == "quantize") {
       rhs = MakeNode("cast", rname + "_cast",
-        {rhs}, {{"dtype", "int32"}});
+        {rhs}, {{"dtype", accumulate_type}});
     }
 
     int lrepr_bit = repr_bit_map[idx.entry_id(idx[nid].inputs[0])];
@@ -225,6 +202,53 @@ inline FQuantize AccumulationQuantize(const char* op_name) {
       out_repr_bit->at(0) = repr_bit_map[idx.entry_id(idx[nid].inputs[0])];
       return out.node;
     }
+  };
+};
+
+
+inline FQuantize ComplicatedOpQuantize(const char* op_name) {
+  // note: for compilicated operation like conv2d inputs
+  // need to be checked and requantize to low-bit representation
+  return [=] (uint32_t nid,
+              const NodePtr& n,
+              const IndexedGraph& idx,
+              const std::vector<int>& scale_map,
+              const std::vector<int>& repr_bit_map,
+              std::vector<int>* out_repr_bit) {
+    std::string node_name = n->attrs.name;
+
+    std::vector<NodeEntry> inputs;
+    int repr_bit = 0;
+    for (size_t i = 0; i < n->inputs.size(); ++i) {
+      const auto& e = n->inputs[i];
+      int in_repr_bit = repr_bit_map[idx.entry_id(idx[nid].inputs[i])];
+
+      if (e.node->op()->name != "quantize") {
+        // requantize the previous output to low-bit
+        int scale_bit = scale_map[idx.entry_id(idx[nid].inputs[i])];
+        int valid_bit = scale_bit - in_repr_bit;
+        int shift_bit = valid_bit - (input_bit - 1);
+
+        if (shift_bit > 0) {
+          // do right shift and cast
+          NodeEntry shift = MakeRightShiftNode(e, node_name, valid_bit, shift_bit);
+          NodeEntry cast = MakeNode("cast", node_name + "_cast2idtype",
+            {shift}, {{"dtype", storage_type}});
+          inputs.push_back(cast);
+          repr_bit += scale_bit - (input_bit - 1);
+        } else {
+          NodeEntry cast = MakeNode("cast", node_name + "_cast2idtype",
+            {e}, {{"dtype", storage_type}});
+          inputs.push_back(cast);
+          repr_bit += in_repr_bit;
+        }
+      }
+    }
+    out_repr_bit->at(0) = repr_bit;
+
+    NodeEntry qnode = MakeNode(op_name, node_name + "_quantized",
+      inputs, n->attrs.dict);
+    return qnode.node;
   };
 };
 
@@ -641,50 +665,7 @@ NNVM_REGISTER_OP(quantized_conv2d)
 .set_support_level(2);
 
 NNVM_REGISTER_OP(conv2d)
-.set_attr<FQuantize>("FQuantize", [] (uint32_t nid,
-                                      const NodePtr& n,
-                                      const IndexedGraph& idx,
-                                      const std::vector<int>& scale_map,
-                                      const std::vector<int>& repr_bit_map,
-                                      std::vector<int>* out_repr_bit) {
-  std::string node_name = n->attrs.name;
-
-  std::vector<NodeEntry> inputs;
-  int repr_bit = 0;
-  for (size_t i = 0; i < n->inputs.size(); ++i) {
-    const auto& e = n->inputs[i];
-    int in_repr_bit = repr_bit_map[idx.entry_id(idx[nid].inputs[i])];
-
-    if (e.node->op()->name == "quantize") {
-      NodeEntry cast = MakeNode("cast", node_name + "_cast_i16",
-        {e}, {{"dtype", "int16"}});
-      inputs.push_back(cast);
-      repr_bit += in_repr_bit;
-    } else {
-      int scale_bit = scale_map[idx.entry_id(idx[nid].inputs[i])];
-      int valid_bit = scale_bit - in_repr_bit;
-      int shift_bit = valid_bit - (storage_bit - 1);
-
-      if (shift_bit > 0) {
-        NodeEntry shift = MakeRightShiftNode(e, node_name, valid_bit, shift_bit);
-        NodeEntry cast = MakeNode("cast", node_name + "_cast_i16",
-          {shift}, {{"dtype", "int16"}});
-        inputs.push_back(cast);
-        repr_bit += scale_bit - (storage_bit - 1);
-      } else {
-        NodeEntry cast = MakeNode("cast", node_name + "_cast_i16",
-          {e}, {{"dtype", "int16"}});
-        inputs.push_back(cast);
-        repr_bit += in_repr_bit;
-      }
-    }
-  }
-  out_repr_bit->at(0) = repr_bit;
-
-  NodeEntry qnode = MakeNode("quantized_conv2d", node_name + "_quantized",
-    inputs, n->attrs.dict);
-  return qnode.node;
-})
+.set_attr<FQuantize>("FQuantize", ComplicatedOpQuantize("quantized_conv2d"))
 .set_attr<FSeparateBias>("FSeparateBias", [] (const NodePtr& n) {
   const Conv2DParam& param = nnvm::get<Conv2DParam>(n->attrs.parsed);
   if (param.use_bias == false) return std::vector<NodeEntry>({NodeEntry{n, 0, 0}});
