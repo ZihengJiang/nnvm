@@ -104,3 +104,40 @@ def schedule_quantized_conv2d(attrs, outs, target):
         if groups == 1:
             return topi.generic.schedule_conv2d_nchw(outs)
         return topi.generic.schedule_depthwise_conv2d_nchw(outs)
+
+
+@reg.register_compute("simulated_quantize")
+def compute_quantize_and_dequantize(attrs, inputs, _):
+    """Compute definition of quantize"""
+    scale_bit = attrs.get_int('threshold_bit')
+    num_bit = attrs.get_int('num_bit')
+    out_dtype = attrs['out_type']
+    assert out_dtype == 'float32'
+    data = inputs[0]
+
+    # clip data into the range between threshold:
+    #   [-2^threshold_bit, 2^threshold_bit]
+    threshold = pow(2, threshold_bit)
+    cliped_data = topi.clip(data, -threshold, threshold)
+
+    # scale data to [- (2^(num_bit - 1) - 1), 2^(num_bit - 1) - 1]
+    #   (TODO) replace to shift
+    scale = (pow(2, num_bit - 1) - 1) / threshold
+    scaled_data = tvm.compute(data.shape, lambda *i: \
+        cliped_data(*i) / scale)
+
+    # round to integer
+    round_data = tvm.compute(data.shape, lambda *i: \
+        tvm.select(scaled_data(*i) < 0,
+                   - (- scaled_data(*i) + 0.5),
+                   scaled_data(*i) + 0.5))
+
+    # scale back
+    #   (TODO) replace to shift
+    out = tvm.compute(data.shape, lambda *i: \
+        round_data(*i) * scale)
+
+    return out
+
+
+reg.register_schedule("quantize_and_dequantize", _fschedule_naive)

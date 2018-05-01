@@ -17,6 +17,8 @@
 namespace nnvm {
 namespace top {
 
+using namespace compiler;
+
 // quantize
 
 struct QuantizeParam : public dmlc::Parameter<QuantizeParam> {
@@ -163,6 +165,9 @@ NNVM_REGISTER_OP(quantized_dense)
 .set_attr<FInferShape>("FInferShape", QuantizedDenseShape)
 .set_attr<FInferType>("FInferType", QuantizedDenseType)
 .set_support_level(1);
+
+NNVM_REGISTER_OP(dense)
+.set_attr<TQtzPattern>("TQtzPattern", kRequire);
 
 
 // quantized conv2d
@@ -325,6 +330,47 @@ NNVM_REGISTER_OP(quantized_conv2d)
 .set_num_outputs(1)
 .set_num_inputs(UseBiasNumInputs<QuantizedConv2DParam>)
 .set_support_level(2);
+
+NNVM_REGISTER_OP(conv2d)
+.set_attr<TQtzPattern>("TQtzPattern", kRequire);
+
+// simulated_quantize
+
+struct SimulatedQtzParam :
+    public dmlc::Parameter<SimulatedQtzParam> {
+  // the scale of data: [- 2^scale_bit, 2^scale_bit]
+  int threshold_bit;
+  int num_bit;
+  int out_type;
+
+  DMLC_DECLARE_PARAMETER(SimulatedQtzParam) {
+    DMLC_DECLARE_FIELD(threshold_bit);
+    DMLC_DECLARE_FIELD(num_bit);
+    DMLC_DECLARE_FIELD(out_type)
+    .add_enum("float32", kFloat32);
+  };
+};
+
+DMLC_REGISTER_PARAMETER(SimulatedQtzParam);
+
+inline bool SimulatedQtzType(const nnvm::NodeAttrs& attrs,
+                                      std::vector<int>* in_type,
+                                      std::vector<int>* out_type) {
+  const auto& param = nnvm::get<SimulatedQtzParam>(attrs.parsed);
+  CHECK_EQ(out_type->size(), 1U);
+  NNVM_ASSIGN_OUTPUT_TYPE(attrs, *out_type, 0, param.out_type);
+  return true;
+}
+
+NNVM_REGISTER_OP(simulated_quantize)
+.set_num_inputs(1)
+.set_num_outputs(1)
+.set_attr<FInferShape>("FInferShape", ElemwiseShape<1, 1>)
+.set_attr<FInferType>("FInferType", SimulatedQtzType)
+.add_argument("data", "Tensor", "The input tensor.")
+.add_arguments(SimulatedQtzParam::__FIELDS__())
+.set_attr_parser(ParamParser<SimulatedQtzParam>)
+.set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<SimulatedQtzParam>);
 
 }  // namespace top
 }  // namespace nnvm
