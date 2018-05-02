@@ -52,7 +52,7 @@ def _shape_dtype_dict(inputs, params=None):
     return ishapes, idtypes
 
 
-def collect_statistics(graph, dataset, params={}):
+def collect_statistics(graph, params, dataset):
     ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
 
     # optimize
@@ -104,9 +104,9 @@ def collect_statistics(graph, dataset, params={}):
         base2_range.append(max(k0, k1))
 
     stats = base2_range
-    return graph, stats, params
+    return graph, params, stats
 
-def calibrate(graph, stats, dataset, params={}):
+def calibrate(graph, params, stats, dataset):
     best = stats
     best_loss = 1e6
 

@@ -38,21 +38,22 @@ Graph QuantizeGraph(nnvm::Graph&& src) {
     if (!n->is_variable()) {
       for (const auto& e: n->inputs) {
         cnt[idx.entry_id(e)] ++;
-        if (fqtz_pattern.count(e.node->op()) &&
-            fqtz_pattern[e.node->op()] == kRequire)
-          tagged[idx.entry_id(e)] = true;
+        if (fqtz_pattern.count(n->op()) &&
+            fqtz_pattern[n->op()] == kRequire) {
+          uint32_t eid = idx.entry_id(e);
+          tagged[eid] = true;
+        }
       }
     }
   });
 
   auto transform = [&](uint32_t nid, const NodePtr& n, std::vector<NodeEntry>* ret) {
-    if (n->is_variable()) return false;
     std::vector<NodeEntry> outputs;
     outputs.reserve(n->num_outputs());
 
     for (size_t i = 0; i < n->num_outputs(); ++i) {
-      NodeEntry e{n, 0, 0};
-      uint32_t eid = idx.entry_id(e);
+      NodeEntry e{n, i, 0};
+      uint32_t eid = idx.entry_id(nid, i);
       if (n->is_variable() || cnt[eid] > 1 || tagged[eid]) {
         e = MakeReQtzNode(e, threshold[eid]);
       }
