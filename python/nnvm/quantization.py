@@ -4,6 +4,7 @@ import numpy as np
 import scipy
 import scipy.stats
 import math
+import random
 
 import tvm
 from tvm.contrib import graph_runtime
@@ -31,16 +32,35 @@ def execute_graph(module, inputs, oshapes, odtypes):
 
     return outs
 
-def run_graph(graph, dataset, params={}):
+
+def predict(graph, dataset, params={}):
     ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
     egraph, lib, _ = _compiler.build(graph.symbol, "llvm", ishapes, idtypes)
     mod = graph_runtime.create(egraph, lib, tvm.cpu(0))
     mod.set_input(**params)
     _, oshapes = infer_shape(egraph, **ishapes)
     _, odtypes = infer_dtype(egraph, **idtypes)
+
+    preds = []
     for inputs in dataset:
-        outs = execute_graph(m, inputs, oshapes, odtypes)
-    return err_rate
+        outs = execute_graph(mod, inputs, oshapes, odtypes)
+        pred = outs[-1].asnumpy()
+        preds.append(pred)
+
+    return np.concatenate(preds)
+
+
+def evaluate(preds, labels):
+    count = 0
+    for idx, (pred, label) in enumerate(zip(preds, labels)):
+        pred = np.argmax(pred)
+        label = int(label[0])
+        if pred == label:
+            count += 1
+        rate = float(count) / (idx+1)
+    rate = float(count) / len(preds)
+    return rate
+
 
 def _shape_dtype_dict(inputs, params=None):
     ishapes = {k : v.shape for k, v in inputs.items()}
@@ -106,20 +126,29 @@ def collect_statistics(graph, params, dataset):
     stats = base2_range
     return graph, params, stats
 
-def calibrate(graph, params, stats, dataset):
-    best = stats
-    best_loss = 1e6
+def calibrate(graph, params, dataset, labels, stats):
+    BOUND = 0.98
+    MAX_ROUND = 10
 
-    while best_loss >= bound:
+    best = stats
+    best_rate = 0.01
+    round_cnt = 0
+
+    while best_rate <= BOUND and round_cnt < MAX_ROUND:
+        print('\nround {0}'.format(round_cnt))
         for i in range(len(stats)):
-            for disturbance in [-2, -1, 0, 1, 2]:
+            for disturbance in random.shuffle([-2, -1, 0, 1, 2]):
                 candid = best
                 candid[i] = candid[i] + disturbance
                 qgraph = quantize(graph, candid)
-                loss = run_graph(qgraph, dataset, params)
-                if loss < best_loss:
+                preds = predict(qgraph, dataset, params)
+                rate = evaluate(preds, labels)
+                print('candid: {0}'.format(candid))
+                print('rate: {0}'.format(rate))
+                if rate >= best_rate:
                     best = candid
-                    best_loss = loss
+                    best_rate= rate
+        round_cnt += 1
 
     threshold = best
     return threshold

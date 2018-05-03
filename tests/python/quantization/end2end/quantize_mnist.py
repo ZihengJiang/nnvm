@@ -43,7 +43,9 @@ for batch_data, batch_label in test_data:
 # quantization
 graph = nnvm.graph.create(sym)
 graph, params, stats = collect_statistics(graph, params, dataset[:num_calibration_set])
-qgraph = quantize(graph, stats)
+threshold = stats
+threshold = calibrate(graph, params, dataset[:num_calibration_set], labels[:num_calibration_set], stats)
+qgraph = quantize(graph, threshold)
 print(qgraph.symbol.debug_str())
 
 
