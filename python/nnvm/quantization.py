@@ -10,66 +10,15 @@ import tvm
 from tvm.contrib import graph_runtime
 from collections import namedtuple
 
-from . import graph as _graph
 from . import compiler as _compiler
 from .compiler import graph_attr
 from .compiler.graph_util import infer_shape, infer_dtype
 from .compiler.build_module import precompute_prune
+from .model import graph_execute, predict, evaluate, _shape_dtype_dict
 
 _collect_internal_outputs = tvm.get_global_func("nnvm.quantization.CollectInternalOutputs")
 
 CalibrationEntry = namedtuple("CalibrationEntry", ['min_value', 'max_value'])
-
-def execute_graph(module, inputs, oshapes, odtypes):
-    module.set_input(**inputs)
-    module.run()
-
-    outs = []
-    for i in range(len(oshapes)):
-        arr = tvm.nd.empty(oshapes[i], dtype=odtypes[i])
-        module.get_output(i, arr)
-        outs.append(arr)
-
-    return outs
-
-
-def predict(graph, dataset, params={}):
-    ishapes, idtypes = _shape_dtype_dict(dataset[0], params)
-    egraph, lib, _ = _compiler.build(graph.symbol, "llvm", ishapes, idtypes)
-    mod = graph_runtime.create(egraph, lib, tvm.cpu(0))
-    mod.set_input(**params)
-    _, oshapes = infer_shape(egraph, **ishapes)
-    _, odtypes = infer_dtype(egraph, **idtypes)
-
-    preds = []
-    for inputs in dataset:
-        outs = execute_graph(mod, inputs, oshapes, odtypes)
-        pred = outs[-1].asnumpy()
-        preds.append(pred)
-
-    return np.concatenate(preds)
-
-
-def evaluate(preds, labels):
-    count = 0
-    for idx, (pred, label) in enumerate(zip(preds, labels)):
-        pred = np.argmax(pred)
-        label = int(label[0])
-        if pred == label:
-            count += 1
-        rate = float(count) / (idx+1)
-    rate = float(count) / len(preds)
-    return rate
-
-
-def _shape_dtype_dict(inputs, params=None):
-    ishapes = {k : v.shape for k, v in inputs.items()}
-    idtypes = {k : v.dtype for k, v in inputs.items()}
-    if params is not None:
-        for key, param in params.items():
-            ishapes[key] = param.shape
-            idtypes[key] = param.dtype
-    return ishapes, idtypes
 
 
 def collect_statistics(graph, params, dataset):
@@ -98,7 +47,7 @@ def collect_statistics(graph, params, dataset):
     _, oshapes = infer_shape(stats_graph, **ishapes)
     _, odtypes = infer_dtype(stats_graph, **idtypes)
     for inputs in dataset:
-        outs = execute_graph(m, inputs, oshapes, odtypes)
+        outs = graph_execute(m, inputs, oshapes, odtypes)
         for i, out in enumerate(outs):
             key = out_names[i]
             min_value = np.amin(out.asnumpy())
@@ -129,6 +78,7 @@ def collect_statistics(graph, params, dataset):
 def calibrate(graph, params, dataset, labels, stats):
     BOUND = 0.98
     MAX_ROUND = 10
+    DISTURBANCE = [-2, -1, -0, 1, 2]
 
     best = stats
     best_rate = 0.01
@@ -137,11 +87,12 @@ def calibrate(graph, params, dataset, labels, stats):
     while best_rate <= BOUND and round_cnt < MAX_ROUND:
         print('\nround {0}'.format(round_cnt))
         for i in range(len(stats)):
-            for disturbance in random.shuffle([-2, -1, 0, 1, 2]):
+            random.shuffle(DISTURBANCE)
+            for disturbance in DISTURBANCE:
                 candid = best
                 candid[i] = candid[i] + disturbance
                 qgraph = quantize(graph, candid)
-                preds = predict(qgraph, dataset, params)
+                preds = predict(qgraph, params, dataset)[-1]
                 rate = evaluate(preds, labels)
                 print('candid: {0}'.format(candid))
                 print('rate: {0}'.format(rate))
