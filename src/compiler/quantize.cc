@@ -19,12 +19,26 @@ namespace compiler {
 
 inline NodeEntry MakeReQtzNode(NodeEntry e, int threshold_bit) {
   std::string name = e.node->attrs.name;
-  NodeEntry quantize = MakeNode("simulated_quantize",
-    name + "_quantize", {e},
-    {{"threshold_bit", std::to_string(threshold_bit)},
-     {"num_bit", std::to_string(storage_bit)},
-     {"out_type", "float32"}});
-  return quantize;
+  double threshold = std::pow(2, double(threshold_bit));
+  NodeEntry clipped_data = MakeNode("clip",
+    name + "_clipped", {e},
+    {{"a_min", std::to_string(-threshold)},
+     {"a_max", std::to_string(threshold)}});
+
+  double scale = (std::pow(2, double(storage_bit - 1)) - 1) / threshold;
+  NodeEntry scaled_data = MakeNode("__mul_scalar__",
+    name + "_scaled", {clipped_data},
+    {{"scalar", std::to_string(scale)}});
+
+  NodeEntry rounded_data = MakeNode("around",
+    name + "_rounded", {scaled_data},
+    {{"mode", "symmetry"}});
+
+  NodeEntry rescaled_data = MakeNode("__div_scalar__",
+    name + "_rescaled", {rounded_data},
+    {{"scalar", std::to_string(scale)}});
+
+  return rescaled_data;
 }
 
 Graph QuantizeGraph(nnvm::Graph&& src) {

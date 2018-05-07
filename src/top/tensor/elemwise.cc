@@ -291,6 +291,13 @@ NNVM_REGISTER_ELEMWISE_BINARY_OP(elemwise_div)
     };
 });
 
+// around
+NNVM_REGISTER_ELEMWISE_UNARY_OP(around)
+.describe(R"code(Elemenwise numeric absolute
+
+)code"  NNVM_ADD_FILELINE)
+.set_support_level(3);
+
 // negative
 NNVM_REGISTER_ELEMWISE_UNARY_OP(negative)
 .describe(R"code(Elemenwise numeric negative

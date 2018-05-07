@@ -265,6 +265,15 @@ struct ClipParam : public dmlc::Parameter<ClipParam> {
   }
 };
 
+struct AroundParam : public dmlc::Parameter<AroundParam> {
+  int mode;
+  DMLC_DECLARE_PARAMETER(AroundParam) {
+    DMLC_DECLARE_FIELD(mode);
+      .add_enum("symmetry", kSymmetry)
+  }
+  static const constexpr int kSymmetry = 0;
+};
+
 }  // namespace top
 }  // namespace nnvm
 

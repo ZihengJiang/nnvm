@@ -59,6 +59,20 @@ reg.register_pattern("right_shift", OpPattern.ELEMWISE)
 reg.register_schedule("right_shift", _fschedule_broadcast)
 
 
+# around
+@reg.register_compute("around")
+def compute_around(attrs, inputs, _):
+    data = inputs[0]
+    dtype = data.dtype
+    rounded_data = tvm.compute(data.shape, lambda *i: \
+        tvm.select(data(*i) < 0,
+                   - (- data(*i) + 0.5).astype('int32').astype(dtype),
+                   (data(*i) + 0.5).astype('int32').astype(dtype)))
+    return rounded_data
+
+reg.register_pattern("around", OpPattern.ELEMWISE)
+reg.register_schedule("around", _fschedule_broadcast)
+
 # identity
 reg.register_compute("identity", _compute_unary(topi.identity))
 reg.register_pattern("identity", OpPattern.ELEMWISE)

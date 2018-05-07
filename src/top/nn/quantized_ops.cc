@@ -334,6 +334,8 @@ NNVM_REGISTER_OP(quantized_conv2d)
 NNVM_REGISTER_OP(conv2d)
 .set_attr<TQtzPattern>("TQtzPattern", kRequire);
 
+
+/*
 // simulated_quantize
 
 struct SimulatedQtzParam :
@@ -371,6 +373,7 @@ NNVM_REGISTER_OP(simulated_quantize)
 .add_arguments(SimulatedQtzParam::__FIELDS__())
 .set_attr_parser(ParamParser<SimulatedQtzParam>)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<SimulatedQtzParam>);
+*/
 
 }  // namespace top
 }  // namespace nnvm

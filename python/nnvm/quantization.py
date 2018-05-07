@@ -92,7 +92,9 @@ def calibrate(graph, params, dataset, labels, stats):
                 candid = best
                 candid[i] = candid[i] + disturbance
                 qgraph = quantize(graph, candid)
-                preds = predict(qgraph, params, dataset)[-1]
+                outs = predict(qgraph, params, dataset,
+                               target='cuda', context=tvm.gpu(0))
+                preds = outs[-1]
                 rate = evaluate(preds, labels)
                 print('candid: {0}'.format(candid))
                 print('rate: {0}'.format(rate))
