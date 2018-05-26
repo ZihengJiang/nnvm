@@ -50,6 +50,7 @@ def evaluate(preds, labels):
     for idx, (pred, label) in enumerate(zip(preds, labels)):
         pred = pred.asnumpy()
         pred = np.argmax(pred[0])
+        label = label.asnumpy()
         label = int(label[0])
         if pred == label:
             count += 1

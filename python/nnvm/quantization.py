@@ -17,8 +17,32 @@ from .compiler.build_module import precompute_prune
 from .model import graph_execute, predict, evaluate, _shape_dtype_dict
 
 _collect_internal_outputs = tvm.get_global_func("nnvm.quantization.CollectInternalOutputs")
+_set_quantize_config = tvm.get_global_func("nnvm.quantization.SetQuantizeConfig")
 
 CalibrationEntry = namedtuple("CalibrationEntry", ['min_value', 'max_value'])
+
+
+class QuantizeConfig(object):
+    def __init__(self,
+                 storage_bit=8,
+                 accumulate_bit=32,
+                 storage_dtype='int8',
+                 accumulate_dtype='int32'):
+        self.storage_bit = storage_bit
+        self.accumulate_bit = accumulate_bit
+        self.storage_dtype = storage_dtype
+        self.accumulate_dtype = accumulate_dtype
+
+def set_quantize_config(config):
+    _set_quantize_config(config.storage_bit,
+                         config.accumulate_bit,
+                         config.storage_dtype,
+                         config.accumulate_dtype)
+
+def unset_quantize_config():
+    """ clear the previous configuration. """
+    default_config = QuantizeConfig()
+    set_quantize_config(config0)
 
 
 def collect_statistics(graph, params, dataset):
@@ -37,8 +61,9 @@ def collect_statistics(graph, params, dataset):
     stats_graph = _collect_internal_outputs(graph);
 
     # build module
-    stats_graph, lib, _ = _compiler.build(stats_graph.symbol, "llvm", ishapes, idtypes)
-    m = graph_runtime.create(stats_graph, lib, tvm.cpu(0))
+    target = tvm.target.create('cuda -libs=cublas,cudnn')
+    stats_graph, lib, _ = _compiler.build(stats_graph.symbol, target, ishapes, idtypes)
+    m = graph_runtime.create(stats_graph, lib, tvm.gpu(0))
     m.set_input(**params)
 
     # execute and collect stats
@@ -75,8 +100,12 @@ def collect_statistics(graph, params, dataset):
     stats = base2_range
     return graph, params, stats
 
-def calibrate(graph, params, dataset, labels, stats):
-    BOUND = 0.98
+def calibrate(graph, params, dataset, labels, stats, config=None):
+    if config is not None:
+        set_quantize_config(config)
+
+    BOUND = 0.96
+    MIN_ROUND = 2
     MAX_ROUND = 10
     DISTURBANCE = [-2, -1, -0, 1, 2]
 
@@ -84,7 +113,7 @@ def calibrate(graph, params, dataset, labels, stats):
     best_rate = 0.01
     round_cnt = 0
 
-    while best_rate <= BOUND and round_cnt < MAX_ROUND:
+    while (best_rate <= BOUND or round_cnt >= MIN_ROUND) and round_cnt < MAX_ROUND:
         print('\nround {0}'.format(round_cnt))
         for i in range(len(stats)):
             random.shuffle(DISTURBANCE)
@@ -97,16 +126,24 @@ def calibrate(graph, params, dataset, labels, stats):
                 preds = outs[-1]
                 rate = evaluate(preds, labels)
                 print('candid: {0}'.format(candid))
-                print('rate: {0}'.format(rate))
+                print('rate: {0}, best_rate: {1}'.format(rate, best_rate))
                 if rate >= best_rate:
                     best = candid
                     best_rate= rate
         round_cnt += 1
 
     threshold = best
+    if config is not None:
+        unset_quantize_config()
     return threshold
 
-def quantize(graph, threshold):
+def quantize(graph, threshold, config=None):
+    if config is not None:
+        set_quantize_config(config)
+
     graph._set_json_attr("threshold", threshold, "list_int")
     qgraph = graph.apply("Quantize")
+
+    if config is not None:
+        unset_quantize_config()
     return qgraph

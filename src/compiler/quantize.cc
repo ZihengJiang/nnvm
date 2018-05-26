@@ -17,7 +17,19 @@
 namespace nnvm {
 namespace compiler {
 
+TVM_REGISTER_GLOBAL("nnvm.quantization.SetQuantizeConfig")
+.set_body([](tvm::runtime::TVMArgs args, tvm::runtime::TVMRetValue *rv) {
+  QuantizeConfigThreadLocalEntry *entry = QuantizeConfigThreadLocalStore::Get();
+  entry->storage_bit = args[0];
+  entry->accumulate_bit = args[1];
+  entry->storage_dtype = args[2].operator std::string();
+  entry->accumulate_dtype = args[3].operator std::string();
+});
+
+
+
 inline NodeEntry MakeReQtzNode(NodeEntry e, int threshold_bit) {
+  auto *entry = QuantizeConfigThreadLocalStore::Get();
   std::string name = e.node->attrs.name;
   double threshold = std::pow(2, double(threshold_bit));
   NodeEntry clipped_data = MakeNode("clip",
@@ -25,7 +37,7 @@ inline NodeEntry MakeReQtzNode(NodeEntry e, int threshold_bit) {
     {{"a_min", std::to_string(-threshold)},
      {"a_max", std::to_string(threshold)}});
 
-  double scale = (std::pow(2, double(storage_bit - 1)) - 1) / threshold;
+  double scale = (std::pow(2, double(entry->storage_bit - 1)) - 1) / threshold;
   NodeEntry scaled_data = MakeNode("__mul_scalar__",
     name + "_scaled", {clipped_data},
     {{"scalar", std::to_string(scale)}});
