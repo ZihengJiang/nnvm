@@ -28,9 +28,11 @@ struct QuantizeParam : public dmlc::Parameter<QuantizeParam> {
   DMLC_DECLARE_PARAMETER(QuantizeParam) {
     DMLC_DECLARE_FIELD(repr_bit);
     DMLC_DECLARE_FIELD(out_type)
+    .set_default(kInt32)
     .add_enum("int8", kInt8)
     .add_enum("int16", kInt16)
-    .add_enum("int32", kInt32);
+    .add_enum("int32", kInt32)
+    .add_enum("float32", kFloat32);
   };
 };
 
@@ -102,7 +104,8 @@ struct QuantizedDenseParam : public dmlc::Parameter<QuantizedDenseParam> {
     .set_default(kInt32)
     .add_enum("int8", kInt8)
     .add_enum("int16", kInt16)
-    .add_enum("int32", kInt32);
+    .add_enum("int32", kInt32)
+    .add_enum("float32", kFloat32);
   }
   // constants
   static const constexpr int kData = 0;
@@ -216,7 +219,8 @@ struct QuantizedConv2DParam : public dmlc::Parameter<QuantizedConv2DParam> {
     .set_default(kInt32)
     .add_enum("int8", kInt8)
     .add_enum("int16", kInt16)
-    .add_enum("int32", kInt32);
+    .add_enum("int32", kInt32)
+    .add_enum("float32", kFloat32);
   }
   // constants
   static const constexpr int kData = 0;

@@ -120,7 +120,10 @@ def _conv2d_transpose(inputs, attrs):
 
 def _dense(inputs, attrs):
     import mxnet as mx
-    op_name, new_attrs = 'dense', {}
+    if attrs.get('quantize', False):
+        op_name, new_attrs = 'quantized_dense', {'out_type':'float32',}
+    else:
+        op_name, new_attrs = 'dense', {}
     new_attrs['units'] = _required_attr(attrs, 'num_hidden')
     new_attrs['use_bias'] = not _parse_bool_str(attrs, 'no_bias')
     try:
@@ -132,7 +135,14 @@ def _dense(inputs, attrs):
     use_flatten = _parse_bool_str(attrs, 'flatten', 'True')
     if has_flatten and use_flatten:
         inputs[0] = _sym.flatten(inputs[0])
-    return _get_nnvm_op(op_name)(*inputs, **new_attrs)
+    if attrs.get('quantize', False):
+        _quantize_op = _get_nnvm_op('quantize')
+        _dequantize_op = _get_nnvm_op('dequantize')
+        _copy_op = _get_nnvm_op('copy')
+        return _dequantize_op(_get_nnvm_op(op_name)(_quantize_op(inputs[0], out_type='float32', repr_bit=4),
+                                                    inputs[1], **new_attrs), repr_bit=4)
+    else:
+        return _get_nnvm_op(op_name)(*inputs, **new_attrs)
 
 def _dropout(inputs, attrs):
     op_name, new_attrs = 'dropout', {}
@@ -202,7 +212,7 @@ _identity_list = ['__add_scalar__', '__add_symbol__', '__div_scalar__',
                   '__rsub_scalar__', '__sub_scalar__', '__sub_symbol__',
                   'broadcast_add', 'broadcast_div', 'broadcast_mul',
                   'broadcast_sub', 'broadcast_to', 'cast', 'elemwise_add',
-                  'elemwise_div', 'elemwise_mul', 'elemwise_sub', 'exp',
+                  'elemwise_div', 'elemwise_mul', 'elemwise_sub', 'exp', 'clip',
                   'flatten', 'log', 'log_softmax', 'max', 'min', 'negative',
                   'relu', 'sigmoid', 'softmax', 'sum', 'tanh', 'transpose']
 
@@ -242,7 +252,8 @@ _convert_map = {
 
 def _convert_symbol(op_name, inputs, attrs,
                     identity_list=None,
-                    convert_map=None):
+                    convert_map=None,
+                    quantize=False):
     """Convert from mxnet op to nnvm op.
     The converter must specify some conversions explicitly to
     support gluon format ops such as conv2d...
@@ -273,6 +284,7 @@ def _convert_symbol(op_name, inputs, attrs,
         op = _get_nnvm_op(op_name)
         sym = op(*inputs, **attrs)
     elif op_name in convert_map:
+        attrs['quantize'] = quantize
         sym = convert_map[op_name](inputs, attrs)
     else:
         _raise_not_supported('Operator: ' + op_name)
@@ -284,7 +296,7 @@ def _as_list(arr):
         return arr
     return [arr]
 
-def _from_mxnet_impl(symbol, graph):
+def _from_mxnet_impl(symbol, graph, quantize=False):
     """Convert mxnet symbol to nnvm implementation.
     Reconstruct a nnvm symbol by traversing the mxnet symbol.
 
@@ -302,7 +314,7 @@ def _from_mxnet_impl(symbol, graph):
         Converted symbol
     """
     if len(symbol.list_outputs()) > 1:
-        return [_from_mxnet_impl(s, graph) for s in symbol]
+        return [_from_mxnet_impl(s, graph, quantize) for s in symbol]
 
     name = symbol.attr('name')
     output_index = json.loads(symbol.tojson())['heads'][0][1]
@@ -314,16 +326,16 @@ def _from_mxnet_impl(symbol, graph):
     childs = symbol.get_children()
     if childs:
         op_name = symbol.attr('op_name')
-        childs = [_from_mxnet_impl(childs[i], graph) for i in range(len(childs.list_outputs()))]
+        childs = [_from_mxnet_impl(childs[i], graph, quantize) for i in range(len(childs.list_outputs()))]
         childs = [x for y in childs for x in _as_list(y)]  # expand group symbol
-        node = _convert_symbol(op_name, childs, attr)
+        node = _convert_symbol(op_name, childs, attr, quantize=quantize)
     else:
         op_name = json.loads(symbol.tojson())['nodes'][0]['op']
         node = _sym.Variable(name=name, **attr)
     graph[name] = node
     return node[output_index]
 
-def from_mxnet(symbol, arg_params=None, aux_params=None):
+def from_mxnet(symbol, arg_params=None, aux_params=None, quantize=False):
     """Convert from MXNet's model into compatible NNVM format.
 
     Parameters
@@ -351,7 +363,7 @@ def from_mxnet(symbol, arg_params=None, aux_params=None):
         raise ImportError('{}. MXNet is required to parse symbols.'.format(e))
 
     if isinstance(symbol, mx.sym.Symbol):
-        sym = _from_mxnet_impl(symbol, {})
+        sym = _from_mxnet_impl(symbol, {}, quantize)
         params = {}
         arg_params = arg_params if arg_params else {}
         aux_params = aux_params if aux_params else {}

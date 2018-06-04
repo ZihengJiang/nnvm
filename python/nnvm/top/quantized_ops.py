@@ -17,15 +17,19 @@ def compute_quantize(attrs, inputs, _):
     """Compute definition of quantize"""
     repr_bit = attrs.get_int('repr_bit')
     out_dtype = attrs['out_type']
-    assert out_dtype == 'int8'
+    assert out_dtype == 'float32'
     data = inputs[0]
 
-    bit_width = 8
-    repr_value = pow(2, repr_bit)
-    limit = (pow(2, bit_width - 1) - 1) * repr_value
+    bit_width = 16
+    repr_value = float(1 << repr_bit)
+    limit = (float(1 << (bit_width - 1)) - 1) # * repr_value
     cliped_data = topi.clip(data, -limit, limit)
     scaled_data = tvm.compute(data.shape, lambda *i: \
-        cliped_data(*i) / repr_value)
+        cliped_data(*i) * repr_value)
+    # round_data = tvm.compute(data.shape, lambda *i: \
+    #     tvm.select(scaled_data(*i) < 0,
+    #                - (- scaled_data(*i) + 0.5),
+    #                scaled_data(*i) + 0.5))
     round_data = tvm.compute(data.shape, lambda *i: \
         tvm.select(scaled_data(*i) < 0,
                    - (- scaled_data(*i) + 0.5),
@@ -40,9 +44,12 @@ reg.register_schedule("quantize", _fschedule_naive)
 def compute_dequantize(attrs, inputs, _):
     """Compute definition of dequantize"""
     repr_bit = attrs.get_int('repr_bit')
+    # out_dtype = attrs['out_type']
+    # assert out_dtype == 'float32'
     data = inputs[0]
-    scaled_data = tvm.compute(data.shape, lambda *i: (data(*i)) * float(pow(2, repr_bit)))
-    return scaled_data
+    scaled_data = tvm.compute(data.shape, lambda *i: (data(*i)) / float(1 << repr_bit))
+    # return scaled_data
+    return topi.cast(scaled_data, 'float32')
 
 reg.register_schedule("dequantize", _fschedule_naive)
 
@@ -51,7 +58,7 @@ reg.register_schedule("dequantize", _fschedule_naive)
 def compute_quantized_dense(attrs, inputs, _):
     """Compute definition of quantized_dense"""
     out_dtype = attrs['out_type']
-    assert attrs.get_bool("use_bias") is False
+    # assert attrs.get_bool("use_bias") is False
 
     data = inputs[0]
     weight = inputs[1]

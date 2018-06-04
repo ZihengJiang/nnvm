@@ -176,12 +176,12 @@ NNVM_REGISTER_ELEMWISE_UNARY_OP(sqrt)
 
 DMLC_REGISTER_PARAMETER(ShiftParam);
 
-NNVM_REGISTER_ELEMWISE_UNARY_OP(left_shift)
+NNVM_REGISTER_ELEMWISE_UNARY_OP(__lshift_scalar__)
 .add_arguments(ShiftParam::__FIELDS__())
 .set_attr_parser(ParamParser<ShiftParam>)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<ShiftParam>);
 
-NNVM_REGISTER_ELEMWISE_UNARY_OP(right_shift)
+NNVM_REGISTER_ELEMWISE_UNARY_OP(__rshift_scalar__)
 .add_arguments(ShiftParam::__FIELDS__())
 .set_attr_parser(ParamParser<ShiftParam>)
 .set_attr<FGetAttrDict>("FGetAttrDict", ParamGetAttrDict<ShiftParam>);

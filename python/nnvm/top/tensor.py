@@ -41,22 +41,22 @@ _fschedule_broadcast = _fschedule_injective
 _fschedule_elemwise = _fschedule_injective
 
 # lshift
-@reg.register_compute("left_shift")
+@reg.register_compute("__lshift_scalar__")
 def compute_lshift(attrs, inputs, _):
     data = inputs[0]
     bit = attrs.get_int("bit")
-    return topi.left_shift(data, bit)
-reg.register_pattern("left_shift", OpPattern.ELEMWISE)
-reg.register_schedule("left_shift", _fschedule_broadcast)
+    return topi.__lshift_scalar__(data, bit)
+reg.register_pattern("__lshift_scalar__", OpPattern.ELEMWISE)
+reg.register_schedule("__lshift_scalar__", _fschedule_broadcast)
 
 # rshift
-@reg.register_compute("right_shift")
+@reg.register_compute("__rshift_scalar__")
 def compute_rshift(attrs, inputs, _):
     data = inputs[0]
     bit = attrs.get_int("bit")
-    return topi.right_shift(data, bit)
-reg.register_pattern("right_shift", OpPattern.ELEMWISE)
-reg.register_schedule("right_shift", _fschedule_broadcast)
+    return topi.__rshift_scalar__(data, bit)
+reg.register_pattern("__rshift_scalar__", OpPattern.ELEMWISE)
+reg.register_schedule("__rshift_scalar__", _fschedule_broadcast)
 
 
 # around
